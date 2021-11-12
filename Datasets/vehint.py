@@ -37,6 +37,7 @@ class VehIntDataset(data.Dataset):
         self.max_objects = 49 # found using python script
         
         self.keypoint_ids = [0, 1, 2, 3, 22, 23, 25, 26, 31, 32, 34, 35, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65]
+        self.num_kpts = len(self.keypoint_ids)
         
         
         
@@ -59,8 +60,15 @@ class VehIntDataset(data.Dataset):
         print(f"Image path is: {image_path}")
         image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
         
+        image_size = [image.shape[1], image.shape[2]]
+        
         ann_id = self.coco.getAnnIds([image_id])
         annotations = self.coco.loadAnns(ann_id)
+        
+        # phi function that gives the heatmap for every keypoint
+        kpt_hm = np.zeros((self.num_kpts, image_size[0], image_size[1]), dtype=np.float32)
+        # J function that gives the offset from to the keypoints from the center of the object
+        
         
         labels = []
         
