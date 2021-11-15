@@ -75,8 +75,7 @@ class VehIntDataset(data.Dataset):
         kpt_hm = np.zeros((self.max_kpts, image_size[0], image_size[1]), dtype=np.float32)
         # the offsets of the keypoints from the object center points
         kpt_regs = np.zeros((self.max_objects, self.max_kpts, 2), dtype=np.float)
-        
-        
+       
         ct_offset = np.zeros((self.max_objects, 2))
         
         for i in range(num_objs):
@@ -96,7 +95,6 @@ class VehIntDataset(data.Dataset):
             
             if len(ann['keypoints']) != 0:
                 kpts = np.array(ann['keypoints']).reshape(self.num_kpts, 3)
-                
                 for j in range(self.max_kpts):
                     kpt = kpts[self.keypoint_ids[j]]
                     
