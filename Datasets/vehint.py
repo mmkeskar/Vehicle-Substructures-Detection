@@ -62,7 +62,7 @@ class VehIntDataset(data.Dataset):
         print(f"Image path is: {image_path}")
         image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
         
-        image_size = (image.shape[1], image.shape[2])
+        output_res = self.opt.output_res
         
         ann_id = self.coco.getAnnIds([image_id])
         annotations = self.coco.loadAnns(ann_id)
@@ -70,45 +70,72 @@ class VehIntDataset(data.Dataset):
         num_objs = min(self.max_objects, len(annotations))
         
         # a heatmap for the object centers
-        obj_hm = np.zeros((self.num_cats, image_size[0], image_size[1]), dtype=np.float32)
+        hm = np.zeros((self.num_cats, output_res, output_res), dtype=np.float32)
         # a heatmap for all the keypoints
-        kpt_hm = np.zeros((self.max_kpts, image_size[0], image_size[1]), dtype=np.float32)
+        hm_hp = np.zeros((self.max_kpts, output_res, output_res), dtype=np.float32)
         # the offsets of the keypoints from the object center points
-        kpt_regs = np.zeros((self.max_objects, self.max_kpts, 2), dtype=np.float)
-       
-        ct_offset = np.zeros((self.max_objects, 2))
+        kps = np.zeros((self.max_objects, self.max_kpts*2), dtype=np.float)
+        reg_mask = np.zeros((self.max_objects), dtype=np.unit8)
+        kps_mask = np.zeros((self.max_objects, self.max_kpts*2), dtype=np.unit8)
+        wh = np.zeros((self.max_objects, 2), dtype=np.float32)
+        hp_mask = np.zeros((self.max_objects*self.max_kpts), dtype=np.int64)
+        reg = np.zeros((self.max_objects, 2))
         
+        hp_offset = np.zeros((self.max_objects*self.max_kpts, 2), dtype=np.float32)
+        
+        
+        ind = np.zeros((self.max_objects), dtype=np.int64)
+        hp_ind = np.zeros((self.max_objects*self.max_kpts), dtype=np.int64)
+        
+        gt_det = []
+        
+        print("creating targets")
         for i in range(num_objs):
             ann = annotations[i]
             bbox = ann['bbox']
             bbox = [bbox[0], bbox[1], bbox[0] + bbox[2], bbox[1] + bbox[3]]
             
+            w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            
             center = np.array([(bbox[0] + bbox[2])/2, (bbox[1] + bbox[3])/2])
             ct_int = np.array([int(center[0]), int(center[1])])
             
-            ct_offset[i] = center - ct_int
+            ind[i] = ct_int[1]*output_res + ct_int[0]
+            reg[i] = center - ct_int
             
-            radius = get_radius(bbox[2] - bbox[0], bbox[3] - bbox[1])
+            wh[i] = w, h
+            
+            radius = get_radius(w, h)
             sigma = radius/3
             
-            obj_hm[0] = gaussian_heatmap(obj_hm[0], ct_int, sigma)
+            hm[0] = gaussian_heatmap(hm[0], ct_int, sigma)
+            
             
             if len(ann['keypoints']) != 0:
                 kpts = np.array(ann['keypoints']).reshape(self.num_kpts, 3)
+                reg_mask[i] = 1
+                
                 for j in range(self.max_kpts):
                     kpt = kpts[self.keypoint_ids[j]]
                     
-                    rad = get_radius(bbox[2] - bbox[0], bbox[3] - bbox[1])
+                    hp_offset[i*self.max_kpts+j] = kpt[:2] - kpt[:2].astype(np.int32)
                     
-                    kpt_hm[j] = gaussian_heatmap(kpt_hm[j], (kpt[0], kpt[1]), rad)
+                    hm_hp[j] = gaussian_heatmap(hm_hp[j], (kpt[0], kpt[1]), radius)
                     
-                    kpt_regs[i][j][0], kpt_regs[i][j][1] = kpt[0] - center[0], kpt[1] - center[1]
-            
-            
+                    kps[i][j*2:j*2+2] = kpt[0] - center[0], kpt[1] - center[1]
+                    
+                    hp_mask[i*self.max_keypoints+j] = 1
+                    
+                    kps_mask[i][j*2:j*2+2] = 1
+                    
+                    hp_ind[i*self.max_kpts + j] = int(kpt[1])*output_res + int(kpt[0])
+                
+                gt_det.append([center[0] - w/2, center[1] - h/2,
+                           center[0] + w/2, center[1] + h/2, 1] + kpts[:, :2].reshape[self.max_kpts*2].tolist() + [0])
            
-        sample = {'image': image, 'image_path': image_path, 'hm': obj_hm, \
-                  'center offset': ct_offset, 'keypoint regression': kpt_regs, \
-                  'keypoint heatmaps': kpt_hm} 
+        sample = {'image': image, 'image_path': image_path, 'hm': hm, 'wh': wh, 'hp_mask': hp_mask, \
+                  'reg': reg, 'kps': kps, 'hm_hp': hm_hp, 'reg_mask': reg_mask, \
+                  'kps_mask': kps_mask, 'gt_det': gt_det, 'ind': ind, 'hp_ind': hp_ind} 
             
         return sample
     
