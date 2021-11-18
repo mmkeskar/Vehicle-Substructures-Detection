@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 Created on Thu Nov  4 14:54:11 2021
-
 @author: akshay
 """
 
@@ -20,6 +19,7 @@ import os
 
 from utils.image import gaussian_radius, draw_umich_gaussian, draw_msra_gaussian
 from utils.image import draw_dense_reg
+
 """from utils.image import flip, color_aug
 from utils.image import get_affine_transform, affine_transform
 from utils.image import gaussian_radius, draw_umich_gaussian, draw_msra_gaussian
@@ -40,10 +40,10 @@ class VehIntDataset(data.Dataset):
         self.sample_size = len(self.images)
         
         self.max_objects = 49 # found using python script
-        self.num_kpts = 66
-        self.num_cats = 1
+        
         self.keypoint_ids = [0, 1, 2, 3, 22, 23, 25, 26, 31, 32, 34, 35, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65]
-        self.max_kpts = len(self.keypoint_ids)
+        self.num_kpts = len(self.keypoint_ids)
+        
         
         
     def _coco_box_to_bbox(self, box):
@@ -64,14 +64,16 @@ class VehIntDataset(data.Dataset):
         image_path = os.path.join(self.image_path_const, file_path_ext)
         print(f"Image path is: {image_path}")
         image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
-        
+    
         output_res = self.opt.output_res
         
         ann_id = self.coco.getAnnIds([image_id])
         annotations = self.coco.loadAnns(ann_id)
         
-        num_objs = min(self.max_objects, len(annotations))
-        
+        # phi function that gives the heatmap for every keypoint
+        kpt_hm = np.zeros((self.num_kpts, image_size[0], image_size[1]), dtype=np.float32)
+        # J function that gives the offset from to the keypoints from the center of the object
+
         # a heatmap for the object centers
         hm = np.zeros((self.num_cats, output_res, output_res), dtype=np.float32)
         # a heatmap for all the keypoints
@@ -147,6 +149,7 @@ class VehIntDataset(data.Dataset):
                   'kps_mask': kps_mask, 'gt_det': gt_det, 'ind': ind, 'hp_ind': hp_ind} 
             
         return sample
-    
+        
+        
     def __len__(self):
        return self.sample_size
