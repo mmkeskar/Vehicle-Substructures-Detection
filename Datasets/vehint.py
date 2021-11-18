@@ -18,7 +18,8 @@ import json
 import cv2
 import os
 
-from helper_functions import gaussian_heatmap, get_radius
+from utils.image import gaussian_radius, draw_umich_gaussian, draw_msra_gaussian
+from utils.image import draw_dense_reg
 """from utils.image import flip, color_aug
 from utils.image import get_affine_transform, affine_transform
 from utils.image import gaussian_radius, draw_umich_gaussian, draw_msra_gaussian
@@ -27,9 +28,11 @@ import math
 
 class VehIntDataset(data.Dataset):
     
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, opt):
         super(VehIntDataset, self).__init__()
         self.data_dir = data_dir
+        self.opt = opt
+        
         self.image_path_const = "/media/akshay/SSD1/data-apollocar3d/train/images"
         self.coco = coco.COCO(self.data_dir)
         self.images = self.coco.getImgIds()
@@ -80,14 +83,16 @@ class VehIntDataset(data.Dataset):
         wh = np.zeros((self.max_objects, 2), dtype=np.float32)
         hp_mask = np.zeros((self.max_objects*self.max_kpts), dtype=np.int64)
         reg = np.zeros((self.max_objects, 2))
-        
         hp_offset = np.zeros((self.max_objects*self.max_kpts, 2), dtype=np.float32)
-        
-        
         ind = np.zeros((self.max_objects), dtype=np.int64)
         hp_ind = np.zeros((self.max_objects*self.max_kpts), dtype=np.int64)
         
+        dense_kps = np.zeros((self.max_kpts, 2, output_res, output_res), dtype=np.float32)
+        dense_kps_mask = np.zeros((self.max_kpts, output_res, output_res), dtype=np.float32)
+        
         gt_det = []
+        
+        draw_gaussian = draw_msra_gaussian if self.opt.mse_loss else draw_umich_gaussian
         
         print("creating targets")
         for i in range(num_objs):
@@ -105,10 +110,8 @@ class VehIntDataset(data.Dataset):
             
             wh[i] = w, h
             
-            radius = get_radius(w, h)
+            radius = gaussian_radius((h, w))
             sigma = radius/3
-            
-            hm[0] = gaussian_heatmap(hm[0], ct_int, sigma)
             
             
             if len(ann['keypoints']) != 0:
@@ -120,7 +123,7 @@ class VehIntDataset(data.Dataset):
                     
                     hp_offset[i*self.max_kpts+j] = kpt[:2] - kpt[:2].astype(np.int32)
                     
-                    hm_hp[j] = gaussian_heatmap(hm_hp[j], (kpt[0], kpt[1]), radius)
+                    draw_gaussian(hm_hp[j], (kpt[0], kpt[1]), radius)
                     
                     kps[i][j*2:j*2+2] = kpt[0] - center[0], kpt[1] - center[1]
                     
@@ -129,10 +132,16 @@ class VehIntDataset(data.Dataset):
                     kps_mask[i][j*2:j*2+2] = 1
                     
                     hp_ind[i*self.max_kpts + j] = int(kpt[1])*output_res + int(kpt[0])
+                    
+                    if self.opt.dense_hp:
+                        draw_dense_reg(dense_kps, hm[0], ct_int, kps[i][j*2:j*2+2], radius, True)
+                        draw_gaussian(dense_kps_mask, ct_int, radius)
                 
                 gt_det.append([center[0] - w/2, center[1] - h/2,
                            center[0] + w/2, center[1] + h/2, 1] + kpts[:, :2].reshape[self.max_kpts*2].tolist() + [0])
            
+            draw_gaussian(hm[0], ct_int, sigma)
+            
         sample = {'image': image, 'image_path': image_path, 'hm': hm, 'wh': wh, 'hp_mask': hp_mask, \
                   'reg': reg, 'kps': kps, 'hm_hp': hm_hp, 'reg_mask': reg_mask, \
                   'kps_mask': kps_mask, 'gt_det': gt_det, 'ind': ind, 'hp_ind': hp_ind} 
