@@ -25,8 +25,8 @@ class Apollo3d(data.Dataset):
     def __init__(self, opt, split):
         super(Apollo3d, self).__init__()
         
-        #TODO: parse this properly in opt class
-        self.data_dir = opt.data_dir 
+        self.data_dir = opt.data_dir
+        self.opt = opt
         
         #TODO: change the file names and parsing info correctly
         if split == 'test':
@@ -43,10 +43,11 @@ class Apollo3d(data.Dataset):
               self.data_dir, 'annotations', 
               'apollo_keypoints_66_{}.json').format(split)
             
+        self.image_path_const = os.path.join(self.data_dir, 'images')
+            
         #TODO: find out the different classes in this dataset and then label them
         #TODO: find out max_objects
-        #TODO: find the respective eigenvalues and eigenvectors, cat ids, etc. 
-        self.max_objs = 128
+        #TODO: find the respective eigenvalues and eigenvectors, cat ids, etc.
         self.class_name = [
          "top_left_c_left_front_car_light",      # 0
     "bottom_left_c_left_front_car_light",   # 1
@@ -126,25 +127,21 @@ class Apollo3d(data.Dataset):
         self.voc_color = [(v // 32 * 64 + 64, (v // 8) % 4 * 64, v % 8 * 32) \
                          for v in range(1, self.num_classes + 1)]
         self._data_rng = np.random.RandomState(123)
-        
-        #TODO: change this if needed
-        self._eig_val = np.array([0.2141788, 0.01817699, 0.00341571],
-                                dtype=np.float32)
-        self._eig_vec = np.array([
-           [-0.58752847, -0.69563484, 0.41340352],
-           [-0.5832747, 0.00994535, -0.81221408],
-           [-0.56089297, 0.71832671, 0.41158938]
-       ], dtype=np.float32)
-       # self.mean = np.array([0.485, 0.456, 0.406], np.float32).reshape(1, 1, 3)
-       # self.std = np.array([0.229, 0.224, 0.225], np.float32).reshape(1, 1, 3)
 
         self.split = split
         self.opt = opt
 
         print('==> initializing apollo3d {} data.'.format(split))
-        self.coco = coco.COCO(self.annot_path)
+        self.coco = coco.COCO(self.data_dir)
         self.images = self.coco.getImgIds()
+        
         self.num_samples = len(self.images)
+        
+        self.max_objects = 49 # found using python script
+        self.num_kpts = 66
+        self.num_cats = 1
+        self.keypoint_ids = [0, 1, 2, 3, 22, 23, 25, 26, 31, 32, 34, 35, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65]
+        self.max_kpts = len(self.keypoint_ids)
 
         print('Loaded {} {} samples'.format(split, self.num_samples))
 
