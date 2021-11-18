@@ -19,7 +19,7 @@ import os
 import torch.utils.data as data
 
 class Apollo3d(data.Dataset):
-    num_classes = 66 # 66 vehicle keypoints
+    num_classes = 1
     default_resolution = [3384, 2710]
     
     def __init__(self, opt, split):
@@ -146,46 +146,54 @@ class Apollo3d(data.Dataset):
         print('Loaded {} {} samples'.format(split, self.num_samples))
 
     def _to_float(self, x):
-       return float("{:.2f}".format(x))
+      return float("{:.2f}".format(x))
 
     def convert_eval_format(self, all_bboxes):
-       # import pdb; pdb.set_trace()
-       detections = []
-       for image_id in all_bboxes:
-         for cls_ind in all_bboxes[image_id]:
-           category_id = self._valid_ids[cls_ind - 1]
-           for bbox in all_bboxes[image_id][cls_ind]:
-             bbox[2] -= bbox[0]
-             bbox[3] -= bbox[1]
-             score = bbox[4]
-             bbox_out  = list(map(self._to_float, bbox[0:4]))
+      # import pdb; pdb.set_trace()
+      detections = []
+      for image_id in all_bboxes:
+        for cls_ind in all_bboxes[image_id]:
+          category_id = 1
+          for dets in all_bboxes[image_id][cls_ind]:
+            bbox = dets[:4]
+            bbox[2] -= bbox[0]
+            bbox[3] -= bbox[1]
+            score = dets[4]
+            bbox_out  = list(map(self._to_float, bbox))
+            keypoints = np.concatenate([
+              np.array(dets[5:39], dtype=np.float32).reshape(-1, 2), 
+              np.ones((17, 1), dtype=np.float32)], axis=1).reshape(51).tolist()
+            keypoints  = list(map(self._to_float, keypoints))
 
-             detection = {
-                 "image_id": int(image_id),
-                 "category_id": int(category_id),
-                 "bbox": bbox_out,
-                 "score": float("{:.2f}".format(score))
-             }
-             if len(bbox) > 5:
-                 extreme_points = list(map(self._to_float, bbox[5:13]))
-                 detection["extreme_points"] = extreme_points
-             detections.append(detection)
-       return detections
+            detection = {
+                "image_id": int(image_id),
+                "category_id": int(category_id),
+                "bbox": bbox_out,
+                "score": float("{:.2f}".format(score)),
+                "keypoints": keypoints
+            }
+            detections.append(detection)
+      return detections
 
     def __len__(self):
-       return self.num_samples
+      return self.num_samples
 
     def save_results(self, results, save_dir):
-       json.dump(self.convert_eval_format(results), 
-                   open('{}/results.json'.format(save_dir), 'w'))
-     
+      json.dump(self.convert_eval_format(results), 
+                open('{}/results.json'.format(save_dir), 'w'))
+
+
     def run_eval(self, results, save_dir):
-       # result_json = os.path.join(save_dir, "results.json")
-       # detections  = self.convert_eval_format(results)
-       # json.dump(detections, open(result_json, "w"))
-       self.save_results(results, save_dir)
-       coco_dets = self.coco.loadRes('{}/results.json'.format(save_dir))
-       coco_eval = COCOeval(self.coco, coco_dets, "bbox")
-       coco_eval.evaluate()
-       coco_eval.accumulate()
-       coco_eval.summarize() 
+      # result_json = os.path.join(opt.save_dir, "results.json")
+      # detections  = convert_eval_format(all_boxes)
+      # json.dump(detections, open(result_json, "w"))
+      self.save_results(results, save_dir)
+      coco_dets = self.coco.loadRes('{}/results.json'.format(save_dir))
+      coco_eval = COCOeval(self.coco, coco_dets, "keypoints")
+      coco_eval.evaluate()
+      coco_eval.accumulate()
+      coco_eval.summarize()
+      coco_eval = COCOeval(self.coco, coco_dets, "bbox")
+      coco_eval.evaluate()
+      coco_eval.accumulate()
+      coco_eval.summarize()
