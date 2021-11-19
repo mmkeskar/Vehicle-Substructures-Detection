@@ -20,7 +20,7 @@ import torch.utils.data as data
 
 class Apollo3d(data.Dataset):
     num_classes = 1
-    default_resolution = [3384, 2710]
+    default_resolution = [2710, 3384]
     
     def __init__(self, opt, split):
         super(Apollo3d, self).__init__()
@@ -43,7 +43,7 @@ class Apollo3d(data.Dataset):
               self.data_dir, 'annotations', 
               'apollo_keypoints_66_{}.json').format(split)
             
-        self.image_path_const = os.path.join(self.data_dir, 'images')
+        self.image_path_const = os.path.join(self.data_dir, 'train/images')
             
         #TODO: find out the different classes in this dataset and then label them
         #TODO: find out max_objects
@@ -132,7 +132,7 @@ class Apollo3d(data.Dataset):
         self.opt = opt
 
         print('==> initializing apollo3d {} data.'.format(split))
-        self.coco = coco.COCO(self.data_dir)
+        self.coco = coco.COCO(self.annot_path)
         self.images = self.coco.getImgIds()
         
         self.num_samples = len(self.images)
