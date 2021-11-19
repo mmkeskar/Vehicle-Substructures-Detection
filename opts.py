@@ -1,3 +1,11 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Wed Nov  3 15:49:11 2021
+
+@author: akshay
+"""
+
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -8,12 +16,18 @@ import sys
 
 class opts(object):
   def __init__(self):
+      
+    """
+    TODO: change 1) task
+                 2) name of dataset
+                 3) 
+    """
     self.parser = argparse.ArgumentParser()
     # basic experiment setting
-    self.parser.add_argument('task', default='ctdet',
-                             help='ctdet | ddd | multi_pose | exdet')
-    self.parser.add_argument('--dataset', default='coco',
-                             help='coco | kitti | coco_hp | pascal')
+    self.parser.add_argument('task', default='vehint',
+                             help='vehint | ctdet | ddd | multi_pose | exdet')
+    self.parser.add_argument('--dataset', default='apollo',
+                             help='apollo | coco | kitti | coco_hp | pascal')
     self.parser.add_argument('--exp_id', default='default')
     self.parser.add_argument('--test', action='store_true')
     self.parser.add_argument('--debug', type=int, default=0,
@@ -67,7 +81,7 @@ class opts(object):
                                   '0 for no conv layer'
                                   '-1 for default setting: '
                                   '64 for resnets and 256 for dla.')
-    self.parser.add_argument('--down_ratio', type=int, default=4,
+    self.parser.add_argument('--down_ratio', type=int, default=1,
                              help='output stride. Currently only supports 4.')
 
     # input
@@ -268,8 +282,13 @@ class opts(object):
       opt.chunk_sizes.append(slave_chunk_size)
     print('training chunk_sizes:', opt.chunk_sizes)
 
+    # changed the data directory
     opt.root_dir = os.path.join(os.path.dirname(__file__), '..', '..')
-    opt.data_dir = os.path.join(opt.root_dir, 'data')
+    if opt.dataset == "apollo":
+        opt.data_dir = "/media/akshay/SSD1/data-apollocar3d"
+    else:
+        opt.data_dir = os.path.join(opt.root_dir, 'data')
+        
     opt.exp_dir = os.path.join(opt.root_dir, 'exp', opt.task)
     opt.save_dir = os.path.join(opt.exp_dir, opt.exp_id)
     opt.debug_dir = os.path.join(opt.save_dir, 'debug')
@@ -283,7 +302,7 @@ class opts(object):
 
   def update_dataset_info_and_set_heads(self, opt, dataset):
     input_h, input_w = dataset.default_resolution
-    opt.mean, opt.std = dataset.mean, dataset.std
+    #opt.mean, opt.std = dataset.mean, dataset.std
     opt.num_classes = dataset.num_classes
 
     # input_h(w): opt.input_h overrides opt.input_res overrides dataset default
@@ -328,6 +347,14 @@ class opts(object):
         opt.heads.update({'hm_hp': 17})
       if opt.reg_hp_offset:
         opt.heads.update({'hp_offset': 2})
+    elif opt.task == 'vehint':
+        opt.heads = {'hm': opt.num_classes, 'wh': 2, 'hps': 48}
+        if opt.reg_offset:
+          opt.heads.update({'reg': 2})
+        if opt.hm_hp:
+          opt.heads.update({'hm_hp': 24})
+        if opt.reg_hp_offset:
+          opt.heads.update({'hp_offset': 2})
     else:
       assert 0, 'task not defined!'
     print('heads', opt.heads)
@@ -350,6 +377,8 @@ class opts(object):
       'ddd': {'default_resolution': [384, 1280], 'num_classes': 3, 
                 'mean': [0.485, 0.456, 0.406], 'std': [0.229, 0.224, 0.225],
                 'dataset': 'kitti'},
+      'vehint': {'default_resolution': [3384, 2710], 'num_classes': 1, 'dataset': 'apollo',
+                 'num_keypoints': 24}
     }
     class Struct:
       def __init__(self, entries):
