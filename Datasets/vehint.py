@@ -21,15 +21,16 @@ from utils.image import get_affine_transform, affine_transform
 from utils.image import gaussian_radius, draw_umich_gaussian, draw_msra_gaussian
 from utils.image import draw_dense_reg
 
-"""from utils.image import flip, color_aug
+"""
+from utils.image import flip, color_aug
 from utils.image import get_affine_transform, affine_transform
 from utils.image import gaussian_radius, draw_umich_gaussian, draw_msra_gaussian
-from utils.image import draw_dense_reg"""
+from utils.image import draw_dense_reg
+"""
 import math
 
 
 class VehIntDataset(data.Dataset):
-
     def _get_border(self, border, size):
         i = 1
         while size - border // i <= border // i:
@@ -37,13 +38,10 @@ class VehIntDataset(data.Dataset):
         return border // i
 
     def __getitem__(self, index):
-        # print("__get_item__ called")
         image_id = self.images[index]
         file_path_ext = self.coco.loadImgs(image_id)[0]['file_name']
         image_path = os.path.join(self.image_path_const, file_path_ext)
-        # print(f"Image path is: {image_path}")
         image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
-
         input_res = self.opt.input_res
 
         input_h = image.shape[0]
@@ -56,7 +54,6 @@ class VehIntDataset(data.Dataset):
         image_to_show = image.copy()
         image = (image.astype(np.float32) / 255.)
         image = image.transpose(2, 0, 1)
-
         output_res = self.opt.output_res
 
         ann_id = self.coco.getAnnIds([image_id])
@@ -107,14 +104,12 @@ class VehIntDataset(data.Dataset):
                     bbox[1] = max(min(rand_row + input_res - 1, bbox[1]), rand_row) - rand_row
                     bbox[2] = max(min(rand_col + input_res - 1, bbox[2]), rand_col) - rand_col
                     bbox[3] = max(min(rand_row + input_res - 1, bbox[3]), rand_row) - rand_row
-                #print(bbox)
+              
                 starting_points.append((bbox[0], bbox[1]))
                 ending_points.append((bbox[2], bbox[3]))
 
                 # divide coordinated by down ratio to fit into output res dimensioned targets
                 bbox = bbox / self.opt.down_ratio
-
-                #print(bbox)
 
                 w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
 
@@ -173,7 +168,7 @@ class VehIntDataset(data.Dataset):
                 gt_det.append([center[0] - w / 2, center[1] - h / 2,
                                center[0] + w / 2, center[1] + h / 2, 1] + kpts[:, :2].reshape(
                     self.max_kpts * 2).tolist() + [0])
-
+            
         ret = {'input': image, 'hm': hm, 'reg_mask': reg_mask, 'ind': ind, 'wh': wh,
                'hps': kps, 'hps_mask': kps_mask}
         if self.opt.dense_hp:
@@ -197,9 +192,7 @@ class VehIntDataset(data.Dataset):
             meta = {'gt_det': gt_det, 'img_id': image_id}
             ret['meta'] = meta
 
-        """
-        for key, value in ret.items():
-            if value is None:
-                print(f"this is returning a None: {key} for image id: {image_id}")  // for debugging
-        """
+        
         return ret
+    
+
