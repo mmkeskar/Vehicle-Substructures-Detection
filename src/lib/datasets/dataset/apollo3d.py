@@ -27,8 +27,7 @@ class Apollo3d(data.Dataset):
         
         self.data_dir = opt.data_dir
         self.opt = opt
-        
-        #TODO: change the file names and parsing info correctly
+       
         if split == 'test':
           self.annot_path = os.path.join(
               self.data_dir, 'annotations', 
@@ -45,9 +44,6 @@ class Apollo3d(data.Dataset):
             
         self.image_path_const = os.path.join(self.data_dir, 'train/images')
             
-        #TODO: find out the different classes in this dataset and then label them
-        #TODO: find out max_objects
-        #TODO: find the respective eigenvalues and eigenvectors, cat ids, etc.
         self.class_name = [
          "top_left_c_left_front_car_light",      # 0
     "bottom_left_c_left_front_car_light",   # 1
@@ -140,7 +136,10 @@ class Apollo3d(data.Dataset):
         self.max_objects = 49 # found using python script
         self.num_kpts = 66
         self.num_cats = 1
+        
+        # 24 keypoints for the vehicle internals
         self.keypoint_ids = [0, 1, 2, 3, 22, 23, 25, 26, 31, 32, 34, 35, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65]
+        
         self.max_kpts = len(self.keypoint_ids)
 
         print('Loaded {} {} samples'.format(split, self.num_samples))
