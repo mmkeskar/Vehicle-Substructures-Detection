@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 Created on Wed Oct 20 15:32:47 2021
-
 @author: akshay
 """
 
@@ -20,30 +19,39 @@ import torch.utils.data as data
 
 class Apollo3d(data.Dataset):
     num_classes = 1
-    default_resolution = [2710, 3384]
-    
+    default_resolution = [512, 512]
     def __init__(self, opt, split):
         super(Apollo3d, self).__init__()
         
         self.data_dir = opt.data_dir
         self.opt = opt
-       
+        
+        #TODO: change the file names and parsing info correctly
         if split == 'test':
-          self.annot_path = os.path.join(
-              self.data_dir, 'annotations', 
-              'image_info_test-dev2017.json').format(split)
+            self.annot_path = os.path.join(
+                self.data_dir, 'data-apollocar3d/annotations',
+                'apollo_testnosky_modified.json')
         else:
           if opt.task == 'exdet':
             self.annot_path = os.path.join(
               self.data_dir, 'annotations', 
               'instances_extreme_{}2017.json').format(split)
+          elif opt.task == 'vehint' or opt.task == 'vehint2':
+            self.annot_path = os.path.join(
+              self.data_dir, 'data-apollocar3d/annotations', 
+              'apollo_{}_24_modkeypoints.json').format(split)
           else:
             self.annot_path = os.path.join(
               self.data_dir, 'annotations', 
-              'apollo_keypoints_66_{}.json').format(split)
+              'apollo_{}_24_modkeypoints.json').format(split)
             
-        self.image_path_const = os.path.join(self.data_dir, 'train/images')
+        self.image_path_const = os.path.join(self.data_dir, 'data-apollocar3d/train/images')
+        if split == 'test':
+            self.image_path_const = os.path.join(self.data_dir, 'data-apollocar3d/testnosky')
             
+        #TODO: find out the different classes in this dataset and then label them
+        #TODO: find out max_objects
+        #TODO: find the respective eigenvalues and eigenvectors, cat ids, etc.
         self.class_name = [
          "top_left_c_left_front_car_light",      # 0
     "bottom_left_c_left_front_car_light",   # 1
@@ -126,6 +134,7 @@ class Apollo3d(data.Dataset):
 
         self.split = split
         self.opt = opt
+        self.min_area = 25
 
         print('==> initializing apollo3d {} data.'.format(split))
         self.coco = coco.COCO(self.annot_path)
@@ -134,12 +143,9 @@ class Apollo3d(data.Dataset):
         self.num_samples = len(self.images)
         
         self.max_objects = 49 # found using python script
-        self.num_kpts = 66
+        self.num_kpts = 24
         self.num_cats = 1
-        
-        # 24 keypoints for the vehicle internals
         self.keypoint_ids = [0, 1, 2, 3, 22, 23, 25, 26, 31, 32, 34, 35, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65]
-        
         self.max_kpts = len(self.keypoint_ids)
 
         print('Loaded {} {} samples'.format(split, self.num_samples))
@@ -160,8 +166,9 @@ class Apollo3d(data.Dataset):
             score = dets[4]
             bbox_out  = list(map(self._to_float, bbox))
             keypoints = np.concatenate([
-              np.array(dets[5:39], dtype=np.float32).reshape(-1, 2), 
-              np.ones((17, 1), dtype=np.float32)], axis=1).reshape(51).tolist()
+              np.array(dets[5:53], dtype=np.float32).reshape(-1, 2),
+              np.ones((24, 1), dtype=np.float32)], axis=1).reshape(72).tolist()
+            num_keypoints = sum(keypoints[2:54:3])
             keypoints  = list(map(self._to_float, keypoints))
 
             detection = {
@@ -169,6 +176,7 @@ class Apollo3d(data.Dataset):
                 "category_id": int(category_id),
                 "bbox": bbox_out,
                 "score": float("{:.2f}".format(score)),
+                "num_keypoints": num_keypoints,
                 "keypoints": keypoints
             }
             detections.append(detection)
@@ -196,3 +204,4 @@ class Apollo3d(data.Dataset):
       coco_eval.evaluate()
       coco_eval.accumulate()
       coco_eval.summarize()
+
