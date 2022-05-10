@@ -6,12 +6,14 @@ from .exdet import ExdetDetector
 from .ddd import DddDetector
 from .ctdet import CtdetDetector
 from .multi_pose import MultiPoseDetector
-from .base_detector_vehint import Base_Detector_Vehint
+from .base_detector_vehint import VehintDetector
+from .vehint_kptreg_detector import VehintKptRegDetector
 
 detector_factory = {
   'exdet': ExdetDetector, 
   'ddd': DddDetector,
   'ctdet': CtdetDetector,
   'multi_pose': MultiPoseDetector,
-  'vehint': Base_Detector_Vehint
+  'vehint': VehintDetector,
+  'vehint_kptreg': VehintKptRegDetector
 }
