@@ -36,7 +36,7 @@ class Apollo3d(data.Dataset):
             self.annot_path = os.path.join(
               self.data_dir, 'annotations', 
               'instances_extreme_{}2017.json').format(split)
-          elif opt.task == 'vehint' or opt.task == 'vehint2':
+          elif opt.task == 'vehint' or opt.task == 'vehint2' or opt.task == 'vehint_kptreg':
             self.annot_path = os.path.join(
               self.data_dir, 'data-apollocar3d/annotations', 
               'apollo_{}_24_modkeypoints.json').format(split)
@@ -148,39 +148,71 @@ class Apollo3d(data.Dataset):
         self.keypoint_ids = [0, 1, 2, 3, 22, 23, 25, 26, 31, 32, 34, 35, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65]
         self.max_kpts = len(self.keypoint_ids)
 
+        if opt.task == 'vehint_kptreg':
+            self.num_kpts = 6
+            self.num_int_kpts = 4
+            self.max_internals = self.max_objects * self.num_kpts
+
         print('Loaded {} {} samples'.format(split, self.num_samples))
 
     def _to_float(self, x):
       return float("{:.2f}".format(x))
 
     def convert_eval_format(self, all_bboxes):
-      # import pdb; pdb.set_trace()
-      detections = []
-      for image_id in all_bboxes:
-        for cls_ind in all_bboxes[image_id]:
-          category_id = 1
-          for dets in all_bboxes[image_id][cls_ind]:
-            bbox = dets[:4]
-            bbox[2] -= bbox[0]
-            bbox[3] -= bbox[1]
-            score = dets[4]
-            bbox_out  = list(map(self._to_float, bbox))
-            keypoints = np.concatenate([
-              np.array(dets[5:53], dtype=np.float32).reshape(-1, 2),
-              np.ones((24, 1), dtype=np.float32)], axis=1).reshape(72).tolist()
-            num_keypoints = sum(keypoints[2:54:3])
-            keypoints  = list(map(self._to_float, keypoints))
+        if self.opt != 'vehint_kptreg':
+            # import pdb; pdb.set_trace()
+            detections = []
+            for image_id in all_bboxes:
+                for cls_ind in all_bboxes[image_id]:
+                    category_id = 1
+                    for dets in all_bboxes[image_id][cls_ind]:
+                        bbox = dets[:4]
+                        bbox[2] -= bbox[0]
+                        bbox[3] -= bbox[1]
+                        score = dets[4]
+                        bbox_out  = list(map(self._to_float, bbox))
+                        keypoints = np.concatenate([
+                          np.array(dets[5:53], dtype=np.float32).reshape(-1, 2),
+                          np.ones((24, 1), dtype=np.float32)], axis=1).reshape(72).tolist()
+                        num_keypoints = sum(keypoints[2:72:3])
+                        keypoints  = list(map(self._to_float, keypoints))
 
-            detection = {
-                "image_id": int(image_id),
-                "category_id": int(category_id),
-                "bbox": bbox_out,
-                "score": float("{:.2f}".format(score)),
-                "num_keypoints": num_keypoints,
-                "keypoints": keypoints
-            }
-            detections.append(detection)
-      return detections
+                        detection = {
+                            "image_id": int(image_id),
+                            "category_id": int(category_id),
+                            "bbox": bbox_out,
+                            "score": float("{:.2f}".format(score)),
+                            "num_keypoints": num_keypoints,
+                            "keypoints": keypoints
+                        }
+                        detections.append(detection)
+        else:
+            detections = []
+            for image_id in all_bboxes:
+                for cls_ind in all_bboxes[image_id]:
+                    category_id = 1
+                    for dets in all_bboxes[image_id][cls_ind]:
+                        bbox = dets[:4]
+                        bbox[2] -= bbox[0]
+                        bbox[3] -= bbox[1]
+                        score = dets[4]
+                        bbox_out = list(map(self._to_float, bbox))
+                        keypoints = np.concatenate([
+                            np.array(dets[5:53], dtype=np.float32).reshape(-1, 2),
+                            np.ones((24, 1), dtype=np.float32)], axis=1).reshape(72).tolist()
+                        num_keypoints = sum(keypoints[2:72:3])
+                        keypoints = list(map(self._to_float, keypoints))
+
+                        detection = {
+                            "image_id": int(image_id),
+                            "category_id": int(category_id),
+                            "bbox": bbox_out,
+                            "score": float("{:.2f}".format(score)),
+                            "num_keypoints": num_keypoints,
+                            "keypoints": keypoints
+                        }
+                        detections.append(detection)
+        return detections
 
     def __len__(self):
       return self.num_samples
