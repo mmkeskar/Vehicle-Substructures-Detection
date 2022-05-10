@@ -24,7 +24,7 @@ class opts(object):
     self.parser = argparse.ArgumentParser()
     # basic experiment setting
     self.parser.add_argument('task', default='vehint',
-                             help='vehint | ctdet | ddd | multi_pose | exdet | vehint2')
+                             help='vehint | ctdet | ddd | multi_pose | exdet | vehint2 | vehint_kptreg')
     self.parser.add_argument('--dataset', default='apollo',
                              help='apollo | coco | kitti | coco_hp | pascal')
     self.parser.add_argument('--exp_id', default='default')
@@ -98,7 +98,7 @@ class opts(object):
                              help='learning rate for batch size 32.')
     self.parser.add_argument('--lr_step', type=str, default='90,120',
                              help='drop learning rate by 10.')
-    self.parser.add_argument('--num_epochs', type=int, default=1,                   # TODO: change number of epochs later
+    self.parser.add_argument('--num_epochs', type=int, default=140,
                              help='total training epochs.')
     self.parser.add_argument('--batch_size', type=int, default=32,
                              help='batch size')
@@ -119,7 +119,7 @@ class opts(object):
                              help='multi scale test augmentation.')
     self.parser.add_argument('--nms', action='store_true',
                              help='run nms in testing.')
-    self.parser.add_argument('--K', type=int, default=100,
+    self.parser.add_argument('--K', type=int, default=5,
                              help='max number of output objects.') 
     self.parser.add_argument('--not_prefetch_test', action='store_true',
                              help='not use parallal data pre-processing.')
@@ -193,7 +193,7 @@ class opts(object):
     # vehint
     self.parser.add_argument('--hp_bound_wh_weight', type=float, default=0.1,
                              help='loss weight for bounding box of vehicle internal size.')
-    self.parser.add_argument('--add_bias', action='store_true',
+    self.parser.add_argument('--add_lin_bias', action='store_true',
                              help='pick the rand crops using probability distribution')
     self.parser.add_argument('--flip_true', action='store_true',
                              help='randomly flip image')
@@ -359,11 +359,11 @@ class opts(object):
       if opt.reg_hp_offset:
         opt.heads.update({'hp_offset': 2})
     elif opt.task == 'vehint':
-        opt.heads = {'hm': opt.num_classes, 'wh': 2, 'hps': 34}   # TODO
+        opt.heads = {'hm': opt.num_classes, 'wh': 2, 'hps': 48}
         if opt.reg_offset:
           opt.heads.update({'reg': 2})
         if opt.hm_hp:
-          opt.heads.update({'hm_hp': 17})    # TODO
+          opt.heads.update({'hm_hp': 24})
         if opt.reg_hp_offset:
           opt.heads.update({'hp_offset': 2})
     elif opt.task == 'vehint2':
@@ -375,6 +375,14 @@ class opts(object):
             opt.heads.update({'hm_hp': 6})
         if opt.reg_hp_offset:
             opt.heads.update({'hp_offset': 2})
+    elif opt.task == 'vehint_kptreg':
+        opt.heads = {'hm': opt.num_classes, 'wh': 2, 'hps': 12, 'hps_hps': 8}
+        if opt.reg_offset:
+            opt.heads.update({'reg': 2})
+        if opt.hm_hp:
+            opt.heads.update({'hm_hp': 6, 'kps_kps_hm': 4})
+        if opt.reg_hp_offset:
+            opt.heads.update({'hp_offset': 2, 'hp_hp_offset': 2})
     else:
       assert 0, 'task not defined!'
     print('heads', opt.heads)
@@ -398,7 +406,9 @@ class opts(object):
                 'mean': [0.485, 0.456, 0.406], 'std': [0.229, 0.224, 0.225],
                 'dataset': 'kitti'},
       'vehint': {'default_resolution': [512, 512], 'num_classes': 1, 'dataset': 'apollo',  #3384, 2710
-                 'num_keypoints': 24}
+                 'num_keypoints': 24},
+      'vehint_kptreg': {'default_resolution': [512, 512], 'num_classes': 1, 'dataset': 'apollo', 'num_keypoints': 24}
+
     }
     class Struct:
       def __init__(self, entries):
