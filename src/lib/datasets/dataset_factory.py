@@ -7,6 +7,8 @@ from .sample.ddd import DddDataset
 from .sample.exdet import EXDetDataset
 from .sample.ctdet import CTDetDataset
 from .sample.multi_pose import MultiPoseDataset
+from .sample.vehint2 import VehIntDataset2
+from .sample.vehint_kptreg import VehIntKptRegDataset
 
 from .dataset.apollo3d import Apollo3d
 from .dataset.coco import COCO
@@ -28,7 +30,9 @@ _sample_factory = {
   'exdet': EXDetDataset,
   'ctdet': CTDetDataset,
   'ddd': DddDataset,
-  'multi_pose': MultiPoseDataset
+  'multi_pose': MultiPoseDataset,
+  'vehint2': VehIntDataset2,
+  'vehint_kptreg': VehIntKptRegDataset
 }
 
 
