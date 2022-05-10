@@ -113,20 +113,61 @@ def multi_pose_post_process(dets, c, s, h, w):
     ret.append({np.ones(1, dtype=np.int32)[0]: top_preds})
   return ret
 
-def vehint_post_process(dets):
+def vehint_post_process(dets, input_res):
   ret = []
   for i in range(dets.shape[0]):
     bbox = dets[i, :, :4]
-    bbox[:, [0, 2]] = bbox[:, [0, 2]]  * 4  #* (3384 / 512)
-    bbox[:, [1, 3]] = bbox[:, [1, 3]] * 4   #* (2710 / 512)
+    bbox[:, [0, 2]] = bbox[:, [0, 2]] * 4  # * (3384 / 512)
+    bbox[:, [1, 3]] = bbox[:, [1, 3]] * 4   # * (2710 / 512)
     bbox = bbox.reshape(-1, 4)
-    print(f"bbox: {bbox}")
+    bbox = np.clip(bbox, 0, input_res)
+    # print(f"bbox: {bbox}")
     pts = dets[i, :, 5:53].reshape(-1, 2)
     pts[:, 0] = pts[:, 0] * 4
     pts[:, 1] = pts[:, 1] * 4
     pts = pts.reshape(-1, 48)
-    top_preds = np.concatenate(
-      [bbox, dets[i, :, 4:5], pts], axis=1).astype(np.float32).tolist()
+    pts = np.clip(pts, 0, input_res)
+    if dets.shape[2] > 77:
+      vis = dets[i, :, 53:77].reshape(-1, 24)
+      top_preds = np.concatenate(
+        [bbox, dets[i, :, 4:5], pts, vis], axis=1).astype(np.float32).tolist()
+    else:
+      top_preds = np.concatenate(
+        [bbox, dets[i, :, 4:5], pts], axis=1).astype(np.float32).tolist()
+    ret.append({np.ones(1, dtype=np.int32)[0]: top_preds})
+  return ret
+
+def vehint_kptreg_post_process(dets, input_res):
+  ret = []
+  for i in range(dets.shape[0]):
+    bbox = dets[i, :, :4]
+    bbox[:, [0, 2]] = bbox[:, [0, 2]] * 4  # * (3384 / 512)
+    bbox[:, [1, 3]] = bbox[:, [1, 3]] * 4  # * (2710 / 512)
+    bbox = bbox.reshape(-1, 4)
+    bbox = np.clip(bbox, 0, input_res)
+    # print(f"bbox: {bbox}")
+    pts = dets[i, :, 5:17].reshape(-1, 2)
+    pts[:, 0] = pts[:, 0] * 4
+    pts[:, 1] = pts[:, 1] * 4
+    pts = pts.reshape(-1, 12)
+    pts = np.clip(pts, 0, input_res)
+
+    kpts = dets[i, :, 17:65].reshape(-1, 2)
+    kpts[:, 0] = kpts[:, 0] * 4
+    kpts[:, 1] = kpts[:, 1] * 4
+    kpts = kpts.reshape(-1, 48)
+    kpts = np.clip(kpts, 0, input_res)
+
+    if dets.shape[2] == 66:
+      top_preds = np.concatenate(
+        [bbox, dets[i, :, 4:5], pts, kpts], axis=1).astype(np.float32).tolist()
+    elif dets.shape[2] > 77:
+      vis = dets[i, :, 53:77].reshape(-1, 24)
+      top_preds = np.concatenate(
+        [bbox, dets[i, :, 4:5], pts, vis], axis=1).astype(np.float32).tolist()
+    else:
+      top_preds = np.concatenate(
+        [bbox, dets[i, :, 4:5], pts], axis=1).astype(np.float32).tolist()
     ret.append({np.ones(1, dtype=np.int32)[0]: top_preds})
   return ret
 
