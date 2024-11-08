@@ -12,6 +12,7 @@ from utils.debugger import Debugger
 from utils.post_process import multi_pose_post_process, vehint_kptreg_post_process, vehint_post_process
 from utils.oracle_utils import gen_oracle_map
 from .base_trainer import BaseTrainer
+from torchvision import models
 
 
 class VehintKptRegLoss(torch.nn.Module):
@@ -114,6 +115,63 @@ class VehintKptRegTrainer(BaseTrainer):
     def __init__(self, opt, model, optimizer=None):
         super(VehintKptRegTrainer, self).__init__(opt, model, optimizer=optimizer)
 
+        vis_model_fll = models.resnet34(pretrained=True)
+        vis_model_fll.fc = torch.nn.Sequential(
+            torch.nn.Linear(in_features=512, out_features=1),
+            torch.nn.Sigmoid()
+        )
+        path = "../exp/visibility_models/front_L_light.pt"
+        vis_model_fll.load_state_dict(torch.load(path))
+
+        vis_model_frl = models.resnet34(pretrained=True)
+        vis_model_frl.fc = torch.nn.Sequential(
+            torch.nn.Linear(in_features=512, out_features=1),
+            torch.nn.Sigmoid()
+        )
+        path = "../exp/visibility_models/front_R_light.pt"
+        vis_model_frl.load_state_dict(torch.load(path))
+
+        vis_model_rll = models.resnet34(pretrained=True)
+        vis_model_rll.fc = torch.nn.Sequential(
+            torch.nn.Linear(in_features=512, out_features=1),
+            torch.nn.Sigmoid()
+        )
+        path = "../exp/visibility_models/rear_L_light.pt"
+        vis_model_rll.load_state_dict(torch.load(path))
+
+        vis_model_rrl = models.resnet34(pretrained=True)
+        vis_model_rrl.fc = torch.nn.Sequential(
+            torch.nn.Linear(in_features=512, out_features=1),
+            torch.nn.Sigmoid()
+        )
+        path = "../exp/visibility_models/rear_R_light.pt"
+        vis_model_rrl.load_state_dict(torch.load(path))
+
+        vis_model_fp = models.resnet34(pretrained=True)
+        vis_model_fp.fc = torch.nn.Sequential(
+            torch.nn.Linear(in_features=512, out_features=1),
+            torch.nn.Sigmoid()
+        )
+        path = "../exp/visibility_models/front_plate.pt"
+        vis_model_fp.load_state_dict(torch.load(path))
+
+        vis_model_rp = models.resnet34(pretrained=True)
+        vis_model_rp.fc = torch.nn.Sequential(
+            torch.nn.Linear(in_features=512, out_features=1),
+            torch.nn.Sigmoid()
+        )
+        path = "../exp/visibility_models/rear_plate.pt"
+        vis_model_rp.load_state_dict(torch.load(path))
+
+        self.visibility_models = [
+            vis_model_fll,
+            vis_model_rll,
+            vis_model_rrl,
+            vis_model_frl,
+            vis_model_fp,
+            vis_model_rp
+        ]
+
     def _get_losses(self, opt):
         loss_states = ['loss', 'hm_loss', 'hp_loss', 'hm_hp_loss',
                        'hp_offset_loss', 'wh_loss', 'off_loss', 'hp_hp_loss',
@@ -174,18 +232,17 @@ class VehintKptRegTrainer(BaseTrainer):
             else:
                 debugger.show_all_imgs(pause=True)
 
-    def save_result(self, output, batch, results, iter_id):
+    def save_result(self, output, batch, results):
         # print(f"iter_id: {iter_id}")
         reg = output['reg'] if self.opt.reg_offset else None
         hm_hp = output['hm_hp'] if self.opt.hm_hp else None
         kps_kps_hm = output['kps_kps_hm'] if self.opt.hm_hp else None
         hp_offset = output['hp_offset'] if self.opt.reg_hp_offset else None
         hp_hp_offset = output['hp_hp_offset'] if self.opt.reg_hp_offset else None
-        dets = vehint_kptreg_decode(
+        dets = vehint_kptreg_decode(batch["input"], self.visibility_models,
             output['hm'], output['wh'], output['hps'], output['hps_hps'],
             reg=reg, hm_hp=hm_hp, hp_offset=hp_offset, kps_kps_hm=kps_kps_hm, hp_hp_offset=hp_hp_offset, K=self.opt.K)
         dets = dets.detach()
-        print(f"det shape: {dets.shape}")
         dets = dets.cpu()
         dets = dets.numpy()
         dets = dets.reshape(1, -1, dets.shape[2])
