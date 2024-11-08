@@ -7,12 +7,13 @@ import numpy as np
 from progress.bar import Bar
 import time
 import torch
+from torchvision import models
 import torch.nn.functional as F
 
 from models.decode import vehint_kptreg_decode
 from models.model import create_model, load_model
 from utils.image import get_affine_transform
-from utils.post_process import vehint_kptreg_post_process
+from utils.post_process import vehint_kptreg_post_process, vehint_post_process
 from utils.debugger import Debugger
 from models.decode import _nms, _topk, _topk_channel
 from models.utils import _gather_feat, _transpose_and_gather_feat
@@ -46,7 +47,7 @@ class VehintKptRegDetector(object):
                       [20, 21], [20, 23], [21, 22], [22, 23]]
 
     def pre_process(self, image):
-        input_res = 2048  # self.opt.input_res
+        input_res = 512  # self.opt.input_res
         """
         image = cv2.resize(image, (input_res, input_res), interpolation=cv2.INTER_AREA)
         image = (image.astype(np.float32) / 255.)
@@ -58,8 +59,8 @@ class VehintKptRegDetector(object):
 
         permissible_row = input_h - input_res  # 2710 - input_res
         permissible_col = input_w - input_res  # 3384 - input_res
-        rand_row = np.random.randint(0, permissible_row) # 1680 #
-        rand_col = np.random.randint(0, permissible_col) # 640 #
+        rand_row = 0 # np.random.randint(0, permissible_row) # 1680 #
+        rand_col = 0 # np.random.randint(0, permissible_col) # 640 #
 
         if input_h > input_res:
             end_row = input_res + rand_row
@@ -86,7 +87,7 @@ class VehintKptRegDetector(object):
         results[1] = results[1].tolist()
         return results
 
-    def process(self, images, return_time=False):
+    def process(self, images, visibility_models, return_time=False):
         with torch.no_grad():
             torch.cuda.synchronize()
             output = self.model(images)[-1]
@@ -102,7 +103,7 @@ class VehintKptRegDetector(object):
             torch.cuda.synchronize()
             forward_time = time.time()
 
-            dets = vehint_kptreg_decode(
+            dets = vehint_kptreg_decode(images, visibility_models,
                 output['hm'], output['wh'], output['hps'], output['hps_hps'],
                 reg=reg, hm_hp=hm_hp, hp_offset=hp_offset, kps_kps_hm=kps_kps_hm, hp_hp_offset=hp_hp_offset,
                 K=self.opt.K)
@@ -128,9 +129,9 @@ class VehintKptRegDetector(object):
     def post_process(self, dets):
         dets = dets.detach().cpu().numpy().reshape(1, -1, dets.shape[2])
         # print(f"input res: {self.opt.input_res}")
-        dets = vehint_kptreg_post_process(dets.copy(), 2048)
+        dets = vehint_post_process(dets.copy(), 2048) # vehint_kptreg_post_process(dets.copy(), 2048)
         for j in range(1, self.num_classes + 1):
-            dets[0][j] = np.array(dets[0][j], dtype=np.float32).reshape(-1, 65)
+            dets[0][j] = np.array(dets[0][j], dtype=np.float32).reshape(-1, 53)
             # import pdb; pdb.set_trace()
         return dets[0]
 
@@ -141,12 +142,24 @@ class VehintKptRegDetector(object):
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         plt.imshow(image)
         plt.show()
+        j = 0
         for bbox in results[1]:
+            print(j)
+            j += 1
             if bbox[4] > self.opt.vis_thresh:
                 bbox = np.array(bbox).astype(int)
-                cv2.rectangle(image, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 255, 0), thickness=3,
+                if j == 1:
+                    print(bbox)
+                cv2.rectangle(image, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 255, 255), thickness=3,
                               lineType=cv2.LINE_8)
                 resize_down = cv2.resize(image, down_points, interpolation=cv2.INTER_LINEAR)
+                keypoints = bbox[5:53].reshape(-1, 2)
+                for i, keypoint in enumerate(keypoints):
+                    cv2.circle(image, (keypoint[0], keypoint[1]), 3, (0, 0, 255), 2)
+                    resize_down = cv2.resize(image, down_points, interpolation=cv2.INTER_LINEAR)
+
+                # TODO: decide which one, one below is for centers of internals included
+                """
                 internals = bbox[5:17].reshape(-1, 2)
                 for i, internal in enumerate(internals):
                     cv2.circle(image, (internal[0], internal[1]), 3, (255, 0, 0), 2)
@@ -155,6 +168,8 @@ class VehintKptRegDetector(object):
                 for i, keypoint in enumerate(keypoints):
                     cv2.circle(image, (keypoint[0], keypoint[1]), 3, (0, 255, 0), 2)
                     resize_down = cv2.resize(image, down_points, interpolation=cv2.INTER_LINEAR)
+                """
+
                 """
                 for j, e in enumerate(self.edges):
                     if keypoints[e].min() > 0:
@@ -198,7 +213,64 @@ class VehintKptRegDetector(object):
             pre_process_time = time.time()
             pre_time += pre_process_time - scale_start_time
 
-            output, dets, forward_time = self.process(images, return_time=True)
+            vis_model_fll = models.resnet34(pretrained=True)
+            vis_model_fll.fc = torch.nn.Sequential(
+                torch.nn.Linear(in_features=512, out_features=1),
+                torch.nn.Sigmoid()
+            )
+            path = "../exp/visibility_models/front_L_light.pt"
+            vis_model_fll.load_state_dict(torch.load(path))
+
+            vis_model_frl = models.resnet34(pretrained=True)
+            vis_model_frl.fc = torch.nn.Sequential(
+                torch.nn.Linear(in_features=512, out_features=1),
+                torch.nn.Sigmoid()
+            )
+            path = "../exp/visibility_models/front_R_light.pt"
+            vis_model_frl.load_state_dict(torch.load(path))
+
+            vis_model_rll = models.resnet34(pretrained=True)
+            vis_model_rll.fc = torch.nn.Sequential(
+                torch.nn.Linear(in_features=512, out_features=1),
+                torch.nn.Sigmoid()
+            )
+            path = "../exp/visibility_models/rear_L_light.pt"
+            vis_model_rll.load_state_dict(torch.load(path))
+
+            vis_model_rrl = models.resnet34(pretrained=True)
+            vis_model_rrl.fc = torch.nn.Sequential(
+                torch.nn.Linear(in_features=512, out_features=1),
+                torch.nn.Sigmoid()
+            )
+            path = "../exp/visibility_models/rear_R_light.pt"
+            vis_model_rrl.load_state_dict(torch.load(path))
+
+            vis_model_fp = models.resnet34(pretrained=True)
+            vis_model_fp.fc = torch.nn.Sequential(
+                torch.nn.Linear(in_features=512, out_features=1),
+                torch.nn.Sigmoid()
+            )
+            path = "../exp/visibility_models/front_plate.pt"
+            vis_model_fp.load_state_dict(torch.load(path))
+
+            vis_model_rp = models.resnet34(pretrained=True)
+            vis_model_rp.fc = torch.nn.Sequential(
+                torch.nn.Linear(in_features=512, out_features=1),
+                torch.nn.Sigmoid()
+            )
+            path = "../exp/visibility_models/rear_plate.pt"
+            vis_model_rp.load_state_dict(torch.load(path))
+
+            visibility_models = [
+                vis_model_fll,
+                vis_model_rll,
+                vis_model_rrl,
+                vis_model_frl,
+                vis_model_fp,
+                vis_model_rp
+            ]
+
+            output, dets, forward_time = self.process(images, visibility_models, return_time=True)
 
             torch.cuda.synchronize()
             net_time += forward_time - pre_process_time
