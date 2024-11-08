@@ -60,6 +60,10 @@ class VehIntDataset(data.Dataset):
                 rows = np.arange(0, permissible_row)
                 probs = rows / np.sum(rows)
                 rand_row = np.random.choice(rows, 1, p=probs)[0]
+            elif self.opt.add_quad_bias:
+                rows = np.arange(0, permissible_row) ** 2
+                probs = rows / np.sum(rows)
+                rand_row = np.random.choice(rows, 1, p=probs)[0]
             else:
                 rand_row = np.random.randint(0, permissible_row)
             rand_col = np.random.randint(0, permissible_col)
@@ -88,6 +92,8 @@ class VehIntDataset(data.Dataset):
         hp_offset = np.zeros((self.max_objects * self.num_kpts, 2), dtype=np.float32)
         ind = np.zeros((self.max_objects), dtype=np.int64)
         hp_ind = np.zeros((self.max_objects * self.num_kpts), dtype=np.int64)
+        kps_visibility = np.zeros((self.max_objects, self.num_kpts * 2), dtype=np.int64)
+        kps_vis_mask = np.zeros((self.max_objects, self.num_kpts), dtype=np.int64)
 
         dense_kps = np.zeros((self.num_kpts, 2, output_res, output_res), dtype=np.float32)
         dense_kps_mask = np.zeros((self.num_kpts, output_res, output_res), dtype=np.float32)
@@ -157,6 +163,9 @@ class VehIntDataset(data.Dataset):
 
                     for j in range(self.num_kpts):
                         kpt = kpts[j]
+                        kps_visibility[i][j * 2] = 1 if kpt[2] == 2 else 0
+                        kps_visibility[i][j * 2 + 1] = 0 if kpt[2] == 2 else 1
+                        kps_vis_mask[i][j] = 1
                         if kpt[2] > 0:
                             centers.append((kpt[0], kpt[1]))
                             hp_offset[i * self.num_kpts + j] = kpt[:2] - kpt[:2].astype(np.int32)
