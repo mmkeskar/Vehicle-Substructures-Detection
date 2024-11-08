@@ -2,11 +2,18 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import copy
+
 import torch
 import torch.nn as nn
 from .utils import _gather_feat, _transpose_and_gather_feat
+from torchvision import models, transforms
+import numpy as np
+import cv2
 
-def _nms(heat, kernel=3):
+from .helper_methods import make_cropped_image
+
+def _nms(heat, kernel=3):  # TODO: play with this
     pad = (kernel - 1) // 2
 
     hmax = nn.functional.max_pool2d(
@@ -106,8 +113,8 @@ def _topk(scores, K=40):
     topk_scores, topk_inds = torch.topk(scores.view(batch, cat, -1), K)
 
     topk_inds = topk_inds % (height * width)
-    topk_ys   = (topk_inds / width).int().float()
-    topk_xs   = (topk_inds % width).int().float()
+    topk_ys   = (topk_inds / width).int().float()  # row
+    topk_xs   = (topk_inds % width).int().float()  # col
       
     topk_score, topk_ind = torch.topk(topk_scores.view(batch, -1), K)
     topk_clses = (topk_ind / K).int()
@@ -566,15 +573,369 @@ def multi_pose_decode(
       kps = (1 - mask) * hm_kps + mask * kps
       kps = kps.permute(0, 2, 1, 3).contiguous().view(
           batch, K, num_internals * 2)
+
+      """
+      int_ctrs_xs = torch.clamp(kps[..., ::2].view(batch, -1).int(), min=0, max=height - 1)  # shape: batch x K*6
+      int_ctrs_ys = torch.clamp(kps[..., 1::2].view(batch, -1).int(), min=0, max=height - 1)
+      reg_inds = (int_ctrs_ys.int() * height + int_ctrs_xs.int()).long()
+      kps_vis = _transpose_and_gather_feat(kps_vis, reg_inds)
+      visibility = kps_vis.min(2)[1].reshape(batch, K, num_internals, 1).expand(batch, K, num_internals, 2).\
+          reshape(batch, K, num_internals * 2)
+
+      kps = kps * visibility
+      """
+
   detections = torch.cat([bboxes, scores, kps, clses], dim=2)
     
   return detections
 
+
+def vehint_decode(images, hm, wh, kps, visibility_models=None, reg=None, hm_hp=None, hp_offset=None,
+                  K=10, kpts16=False):
+    batch, channels, height, width = hm.size()
+    num_internals = kps.shape[1] // 2
+    hm = _nms(hm)
+    scores, inds, clses, ys, xs = _topk(hm, K=K)
+
+    kps = _transpose_and_gather_feat(kps, inds)
+    kps = kps.view(batch, K, num_internals * 2)
+    kps[..., ::2] += xs.view(batch, K, 1).expand(batch, K, num_internals)
+    kps[..., 1::2] += ys.view(batch, K, 1).expand(batch, K, num_internals)
+
+    """
+    kps_vis = _transpose_and_gather_feat(kps_vis, inds)
+    kps_vis = kps_vis.view(batch, K, num_internals * 2)
+    kps_vis = kps_vis.reshape(batch, -1, 2)
+    kps_vis = F.softmax(kps_vis, dim=2)
+    kps_vis = torch.min(kps_vis, 2)[1].reshape(batch, K, num_internals).float()
+    """
+
+    if reg is not None:
+        reg = _transpose_and_gather_feat(reg, inds)
+        reg = reg.view(batch, K, 2)
+        xs = xs.view(batch, K, 1) + reg[:, :, 0:1]
+        ys = ys.view(batch, K, 1) + reg[:, :, 1:2]
+    else:
+        xs = xs.view(batch, K, 1) + 0.5
+        ys = ys.view(batch, K, 1) + 0.5
+    wh = _transpose_and_gather_feat(wh, inds)
+    wh = wh.view(batch, K, 2)
+    clses = clses.view(batch, K, 1).float()
+    scores = scores.view(batch, K, 1)
+
+    bboxes = torch.cat([xs - wh[..., 0:1] / 2,
+                        ys - wh[..., 1:2] / 2,
+                        xs + wh[..., 0:1] / 2,
+                        ys + wh[..., 1:2] / 2], dim=2)
+    images = images.detach().cpu().numpy().transpose(0, 2, 3, 1)
+
+    if visibility_models is not None:
+        vis_images = np.zeros((bboxes.shape[0] * bboxes.shape[1], 3, 128, 128))
+        num_images, num_objs = bboxes.shape[0], bboxes.shape[1]
+
+        transform = transforms.Compose([transforms.ToPILImage(), transforms.Resize((128, 128)), transforms.ToTensor()])
+
+        for i, image in enumerate(bboxes):
+            for j, object in enumerate(image):
+                box = object.detach().cpu().numpy()
+                box = (np.array(box).astype(int)) * 4
+                crop = images[i][box[1]: box[3], box[0]: box[2], :]
+                crop = torch.tensor(crop)
+                try:
+                    crop = crop.permute(2, 0, 1)
+                    crop = transform(crop)
+                    vis_images[i * num_objs + j] = crop
+                except:
+                    continue
+
+        vis_images = torch.from_numpy(vis_images)
+        vis_images = vis_images.float()
+        vis_preds = []
+        for model in visibility_models:
+            logits = model(vis_images)
+            output = (logits > 0.5).float()
+            for i in range(vis_images.shape[0]):
+                if (vis_images[i] == 0).all():
+                    output[i][0] = 0
+            vis_preds.append(output)
+        vis_preds = torch.stack(vis_preds)
+
+        num_vis_models = len(visibility_models)
+        vis_preds = torch.reshape(vis_preds, (num_vis_models, num_objs * num_images)).permute(1, 0)
+        vis_preds = torch.reshape(vis_preds, (num_images, num_objs, num_vis_models))
+        vis_pred_bbox = torch.reshape((vis_preds == 1).any(axis=2), (num_images, num_objs, 1)). \
+            expand(num_images, num_objs, bboxes.shape[2])
+        vis_pred_bbox = vis_pred_bbox.to(bboxes.device)
+        bboxes = bboxes * vis_pred_bbox
+
+        vis_pred_scores = torch.reshape((vis_preds == 1).any(axis=2), (num_images, num_objs, 1))
+        vis_pred_scores = vis_pred_scores.to(scores.device)
+        scores = scores * vis_pred_scores
+
+    if hm_hp is not None:
+        hm_hp = _nms(hm_hp)
+        thresh = 0.1
+        kps = kps.view(batch, K, num_internals, 2).permute(
+            0, 2, 1, 3).contiguous()  # b x J x K x 2
+        reg_kps = kps.unsqueeze(3).expand(batch, num_internals, K, K, 2)
+        hm_score, hm_inds, hm_ys, hm_xs = _topk_channel(hm_hp, K=K)  # b x J x K
+
+        if hp_offset is not None:
+            hp_offset = _transpose_and_gather_feat(
+                hp_offset, hm_inds.view(batch, -1))
+            hp_offset = hp_offset.view(batch, num_internals, K, 2)
+            hm_xs = hm_xs + hp_offset[:, :, :, 0]
+            hm_ys = hm_ys + hp_offset[:, :, :, 1]
+        else:
+            hm_xs = hm_xs + 0.5
+            hm_ys = hm_ys + 0.5
+
+        if visibility_models is not None:
+            vis_pred_kps = torch.reshape(vis_preds, (batch, K, num_vis_models, 1)).expand(batch, K, num_vis_models, 4)
+            vis_pred_kps = torch.reshape(vis_pred_kps, (batch, K, num_internals))
+            vis_pred_kps = vis_pred_kps.permute(0, 2, 1)
+            vis_pred_kps = vis_pred_kps.to(hm_xs.device)
+            hm_xs = hm_xs * vis_pred_kps
+            hm_ys = hm_ys * vis_pred_kps
+
+        mask = (hm_score > thresh).float()
+        hm_score = (1 - mask) * -1 + mask * hm_score
+        hm_ys = (1 - mask) * (-10000) + mask * hm_ys
+        hm_xs = (1 - mask) * (-10000) + mask * hm_xs
+        hm_kps = torch.stack([hm_xs, hm_ys], dim=-1).unsqueeze(
+            2).expand(batch, num_internals, K, K, 2)
+        dist = (((reg_kps - hm_kps) ** 2).sum(dim=4) ** 0.5)
+        min_dist, min_ind = dist.min(dim=3)  # b x J x K
+        hm_score = hm_score.gather(2, min_ind).unsqueeze(-1)  # b x J x K x 1
+        min_dist = min_dist.unsqueeze(-1)
+        min_ind = min_ind.view(batch, num_internals, K, 1, 1).expand(
+            batch, num_internals, K, 1, 2)
+        hm_kps = hm_kps.gather(3, min_ind)
+        hm_kps = hm_kps.view(batch, num_internals, K, 2)
+        l = bboxes[:, :, 0].view(batch, 1, K, 1).expand(batch, num_internals, K, 1)
+        t = bboxes[:, :, 1].view(batch, 1, K, 1).expand(batch, num_internals, K, 1)
+        r = bboxes[:, :, 2].view(batch, 1, K, 1).expand(batch, num_internals, K, 1)
+        b = bboxes[:, :, 3].view(batch, 1, K, 1).expand(batch, num_internals, K, 1)
+        mask = (hm_kps[..., 0:1] < l) + (hm_kps[..., 0:1] > r) + \
+               (hm_kps[..., 1:2] < t) + (hm_kps[..., 1:2] > b) + \
+               (hm_score < thresh) + (min_dist > (torch.max(b - t, r - l) * 0.3))
+        mask = (mask > 0).float().expand(batch, num_internals, K, 2)
+        kps = (1 - mask) * hm_kps + mask * kps
+        kps = kps.permute(0, 2, 1, 3).contiguous().view(
+            batch, K, num_internals * 2)
+        if kpts16:
+            kps = kps[:, :, :32]
+        # kps = (kps * confidence).float()
+    detections = torch.cat([bboxes, scores, kps, clses], dim=2)
+
+    return detections
+
+
+def offline_model1_decode(images, hm, wh, kps, visibility_models=None, reg=None, hm_hp=None,
+                          hp_offset=None, K=2):
+    batch, channels, height, width = hm.size()
+    num_internals = kps.shape[1] // 2
+    hm = _nms(hm)
+    scores, inds, clses, ys, xs = _topk(hm, K=K)
+
+    kps = _transpose_and_gather_feat(kps, inds)
+    kps = kps.view(batch, K, num_internals * 2)
+    kps[..., ::2] += xs.view(batch, K, 1).expand(batch, K, num_internals)
+    kps[..., 1::2] += ys.view(batch, K, 1).expand(batch, K, num_internals)
+
+    if reg is not None:
+        reg = _transpose_and_gather_feat(reg, inds)
+        reg = reg.view(batch, K, 2)
+        xs = xs.view(batch, K, 1) + reg[:, :, 0:1]
+        ys = ys.view(batch, K, 1) + reg[:, :, 1:2]
+    else:
+        xs = xs.view(batch, K, 1) + 0.5
+        ys = ys.view(batch, K, 1) + 0.5
+    wh = _transpose_and_gather_feat(wh, inds)
+    wh = wh.view(batch, K, 2)
+    clses = clses.view(batch, K, 1).float()
+    scores = scores.view(batch, K, 1)
+
+    bboxes = torch.cat([xs - wh[..., 0:1] / 2,
+                        ys - wh[..., 1:2] / 2,
+                        xs + wh[..., 0:1] / 2,
+                        ys + wh[..., 1:2] / 2], dim=2)
+    images = images.detach().cpu().numpy().transpose(0, 2, 3, 1)
+    # images = cv2.cvtColor(images, cv2.COLOR_BGR2RGB)
+
+    if visibility_models and len(visibility_models) != 0:
+        vis_images = np.zeros((bboxes.shape[0] * bboxes.shape[1], 3, 128, 128))
+        num_images, num_objs = bboxes.shape[0], bboxes.shape[1]
+
+        transform = transforms.Compose([transforms.ToPILImage(), transforms.Resize((128, 128)), transforms.ToTensor()])
+
+        for i, image in enumerate(bboxes):
+            for j, object in enumerate(image):
+                box = object.detach().cpu().numpy()
+                box = (np.array(box).astype(int)) * 4
+                crop = images[i][box[1]: box[3], box[0]: box[2], :]
+                crop = torch.tensor(crop)
+                try:
+                    crop = crop.permute(2, 0, 1)
+                    crop = transform(crop)
+                    vis_images[i * num_objs + j] = crop
+                except Exception as e:
+                    # print(f"error: {e}, {i}, {j}")
+                    continue
+
+        vis_images = torch.from_numpy(vis_images)
+        vis_images = vis_images.float()
+        vis_preds = []
+        for model in visibility_models:
+            logits = model(vis_images)
+            output = (logits > 0.5).float()
+            for i in range(vis_images.shape[0]):
+                if (vis_images[i] == 0).all():
+                    output[i][0] = 0
+            vis_preds.append(output)
+        vis_preds = torch.stack(vis_preds)
+
+        num_vis_models = len(visibility_models)
+        vis_preds = torch.reshape(vis_preds, (num_vis_models, num_objs * num_images)).permute(1, 0)
+        vis_preds = torch.reshape(vis_preds, (num_images, num_objs, num_vis_models))
+        vis_pred_bbox = torch.reshape((vis_preds == 1).any(axis=2), (num_images, num_objs, 1)). \
+            expand(num_images, num_objs, bboxes.shape[2])
+        vis_pred_bbox = vis_pred_bbox.to(bboxes.device)
+        bboxes = bboxes * vis_pred_bbox
+
+        vis_pred_scores = torch.reshape((vis_preds == 1).any(axis=2), (num_images, num_objs, 1))
+        vis_pred_scores = vis_pred_scores.to(scores.device)
+        scores = scores * vis_pred_scores
+
+    if hm_hp is not None:
+        hm_hp = _nms(hm_hp)
+        thresh = 0.1
+        kps = kps.view(batch, K, num_internals, 2).permute(
+            0, 2, 1, 3).contiguous()  # b x J x K x 2
+        reg_kps = kps.unsqueeze(3).expand(batch, num_internals, K, K, 2)
+        hm_score, hm_inds, hm_ys, hm_xs = _topk_channel(hm_hp, K=K)  # b x J x K
+
+        if hp_offset is not None:
+            hp_offset = _transpose_and_gather_feat(
+                hp_offset, hm_inds.view(batch, -1))
+            hp_offset = hp_offset.view(batch, num_internals, K, 2)
+            hm_xs = hm_xs + hp_offset[:, :, :, 0]
+            hm_ys = hm_ys + hp_offset[:, :, :, 1]
+        else:
+            hm_xs = hm_xs + 0.5
+            hm_ys = hm_ys + 0.5
+
+        if visibility_models and len(visibility_models) != 0:
+            vis_pred_kps = torch.reshape(vis_preds, (batch, K, num_vis_models, 1))
+            vis_pred_kps = torch.reshape(vis_pred_kps, (batch, K, num_internals))
+            vis_pred_kps = vis_pred_kps.permute(0, 2, 1)
+            vis_pred_kps = vis_pred_kps.to(hm_xs.device)
+            hm_xs = hm_xs * vis_pred_kps
+            hm_ys = hm_ys * vis_pred_kps
+
+        mask = (hm_score > thresh).float()
+        hm_score = (1 - mask) * -1 + mask * hm_score
+        hm_ys = (1 - mask) * (-10000) + mask * hm_ys
+        hm_xs = (1 - mask) * (-10000) + mask * hm_xs
+        hm_kps = torch.stack([hm_xs, hm_ys], dim=-1).unsqueeze(
+            2).expand(batch, num_internals, K, K, 2)
+        dist = (((reg_kps - hm_kps) ** 2).sum(dim=4) ** 0.5)
+        min_dist, min_ind = dist.min(dim=3)  # b x J x K
+        hm_score = hm_score.gather(2, min_ind).unsqueeze(-1)  # b x J x K x 1
+        min_dist = min_dist.unsqueeze(-1)
+        min_ind = min_ind.view(batch, num_internals, K, 1, 1).expand(
+            batch, num_internals, K, 1, 2)
+        hm_kps = hm_kps.gather(3, min_ind)
+        hm_kps = hm_kps.view(batch, num_internals, K, 2)
+        l = bboxes[:, :, 0].view(batch, 1, K, 1).expand(batch, num_internals, K, 1)
+        t = bboxes[:, :, 1].view(batch, 1, K, 1).expand(batch, num_internals, K, 1)
+        r = bboxes[:, :, 2].view(batch, 1, K, 1).expand(batch, num_internals, K, 1)
+        b = bboxes[:, :, 3].view(batch, 1, K, 1).expand(batch, num_internals, K, 1)
+        mask = (hm_kps[..., 0:1] < l) + (hm_kps[..., 0:1] > r) + \
+               (hm_kps[..., 1:2] < t) + (hm_kps[..., 1:2] > b) + \
+               (hm_score < thresh) + (min_dist > (torch.max(b - t, r - l) * 0.3))
+        mask = (mask > 0).float().expand(batch, num_internals, K, 2)
+        kps = (1 - mask) * hm_kps + mask * kps
+        kps = kps.permute(0, 2, 1, 3).contiguous().view(
+            batch, K, num_internals * 2)
+        # kps = (kps * confidence).float()
+
+    detections = torch.cat([bboxes, scores, kps, clses], dim=2)
+
+    return detections
+
+
+def offline_model2_decode(images, regression_models, dets):
+    K = dets.shape[1]
+    num_images = dets.shape[0]
+    num_kpts = 6
+
+    bboxes = torch.reshape(dets[:, :, :4], (num_images, K, 4))
+    keypoints = torch.reshape(dets[:, :, 5:17], (num_images, K, 2 * num_kpts))
+
+    vis_images_1, vis_images_2, vis_images_3, vis_images_4 = [], [], [], []
+    tot_images = 0
+    for i in range(num_images):
+        for j in range(K):
+            for k in range(0, 2 * num_kpts, 2):
+                code = (k / 2) % 6
+                padded_image = make_cropped_image(images[i].permute(1, 2, 0).detach().cpu().numpy(),
+                                                  bboxes[i][j]*4, keypoints[i][j][k:k+2]*4)
+                # padded_image = cv2.cvtColor(padded_image, cv2.COLOR_BGR2RGB)
+
+                # Convert image to tensor
+                padded_image = torch.tensor(padded_image)
+                padded_image = padded_image.permute(2, 0, 1)
+                # padded_image = torch.reshape(padded_image, (3, padded_image.size()[0], padded_image.size()[1]))
+                padded_image = padded_image.float()
+                tot_images += 1
+                if code == 0:
+                    vis_images_1.append(padded_image)
+                elif code == 1:
+                    vis_images_2.append(padded_image)
+                elif code == 2:
+                    vis_images_3.append(padded_image)
+                elif code == 3:
+                    vis_images_4.append(padded_image)
+    vis_images_1 = torch.stack(vis_images_1)
+    vis_images_2 = torch.stack(vis_images_2)
+    vis_images_3 = torch.stack(vis_images_3)
+    vis_images_4 = torch.stack(vis_images_4)
+    vis_images = [vis_images_1, vis_images_2, vis_images_3, vis_images_4]
+
+    outputs = []
+    example = None
+    for i, model in enumerate(regression_models):
+        model_output = model(vis_images[i])
+        outputs.append(64 * model_output)
+
+    outputs = torch.stack(outputs)
+    outputs = outputs.permute(1, 0, 2)
+    keypoints = keypoints[:, :, :8]*4
+    # deviations = torch.reshape(keypoints, (-1,))
+    # deviations = deviations - deviations.type(torch.int64)
+    # deviations = deviations.detach().cpu().numpy()
+    # with open("deviations.txt", "ab") as f:
+    #     np.savetxt(f, deviations)
+    centers = keypoints.clone()
+    keypoints = torch.reshape(keypoints, (num_images, K, len(regression_models), 1, 2))
+    keypoints = keypoints.permute(0, 1, 2, 4, 3).expand(num_images, K, len(regression_models), 2, 4)
+    keypoints = torch.reshape(keypoints.permute(0, 1, 2, 4, 3), (num_images, K, len(regression_models), 2*len(regression_models)))
+    outputs = torch.reshape(outputs, (num_images, K, len(regression_models), 2*len(regression_models)))
+    outputs = outputs.to(dets.device)
+    outputs = outputs + keypoints
+    outputs = torch.reshape(outputs, (num_images, K, len(regression_models)*2*len(regression_models)))
+
+    dets = torch.cat([bboxes, dets[:, :, 4:5], outputs, centers, dets[:, :, 17:]], dim=2)
+    return dets
+
+
 def vehint_kptreg_decode(
-        heat, wh, kps, kps_kps, reg, hm_hp, hp_offset, kps_kps_hm, hp_hp_offset, K=5):
+        images, visibility_models, heat, wh, kps, kps_kps, reg,
+        hm_hp, hp_offset, kps_kps_hm, hp_hp_offset, K=5):
     batch, cat, height, width = heat.size()
-    num_internals = kps.shape[1] // 2  # kps shape: batch x 49 x 12
-    num_kpts = kps_kps.shape[1] // 2   # kps_kps shape: batch x 49*6 x 8
+    num_internals = kps.shape[1] // 2  # kps shape: batch x 12 x 128 x 128
+    num_kpts = kps_kps.shape[1] // 2   # kps_kps shape: batch x 8 x 128 x 128
     # heat = torch.sigmoid(heat)
     # perform nms on heatmaps
     heat = _nms(heat)
@@ -585,16 +946,198 @@ def vehint_kptreg_decode(
     kps[..., ::2] += xs.view(batch, K, 1).expand(batch, K, num_internals)
     kps[..., 1::2] += ys.view(batch, K, 1).expand(batch, K, num_internals)
 
+    if reg is not None:
+        reg = _transpose_and_gather_feat(reg, inds)
+        reg = reg.view(batch, K, 2)
+        xs = xs.view(batch, K, 1) + reg[:, :, 0:1]
+        ys = ys.view(batch, K, 1) + reg[:, :, 1:2]
+    else:
+        xs = xs.view(batch, K, 1) + 0.5
+        ys = ys.view(batch, K, 1) + 0.5
+    wh = _transpose_and_gather_feat(wh, inds)
+    wh = wh.view(batch, K, 2)
+    clses = clses.view(batch, K, 1).float()
+    scores = scores.view(batch, K, 1)
+
+    bboxes = torch.cat([xs - wh[..., 0:1] / 2,
+                        ys - wh[..., 1:2] / 2,
+                        xs + wh[..., 0:1] / 2,
+                        ys + wh[..., 1:2] / 2], dim=2)
+
+    images = images.detach().cpu().numpy()[0].transpose(1, 2, 0)
+    images = cv2.cvtColor(images, cv2.COLOR_BGR2RGB)
+
+    vis_images = np.zeros((bboxes.shape[0]*bboxes.shape[1], 3, 128, 128))
+    num_images, num_objs = bboxes.shape[0], bboxes.shape[1]
+
+    transform = transforms.Compose([transforms.ToPILImage(), transforms.Resize((128, 128)), transforms.ToTensor()])
+
+    for i, image in enumerate(bboxes):
+        for j, object in enumerate(image):
+            box = object.detach().cpu().numpy()
+            box = (np.array(box).astype(int)) * 4
+            crop = images[box[1]: box[3], box[0]: box[2], :]
+            crop = torch.tensor(crop)
+            try:
+                crop = crop.permute(2, 0, 1)
+                crop = transform(crop)
+                vis_images[i * num_objs + j] = crop
+            except:
+                continue
+
+    vis_images = torch.from_numpy(vis_images)
+    vis_images = vis_images.float()
+    vis_preds = []
+    for model in visibility_models:
+        logits = model(vis_images)
+        output = (logits > 0.5).float()
+        for i in range(vis_images.shape[0]):
+            if (vis_images[i] == 0).all():
+                output[i][0] = 0
+        vis_preds.append(output)
+    vis_preds = torch.stack(vis_preds)
+
+    num_vis_models = len(visibility_models)
+    vis_preds = torch.reshape(vis_preds, (num_vis_models, num_objs * num_images)).permute(1, 0)
+    vis_preds = torch.reshape(vis_preds, (num_images, num_objs, num_vis_models))
+    vis_pred_bbox = torch.reshape((vis_preds == 1).any(axis=2), (num_images, num_objs, 1)). \
+        expand(num_images, num_objs, bboxes.shape[2])
+    vis_pred_bbox = vis_pred_bbox.to(bboxes.device)
+    bboxes = bboxes * vis_pred_bbox
+
+    if hm_hp is not None:
+        hm_hp = _nms(hm_hp)
+        thresh = 0.1
+        kps = kps.view(batch, K, num_internals, 2).permute(
+            0, 2, 1, 3).contiguous()  # b x J x K x 2
+        reg_kps = kps.unsqueeze(3).expand(batch, num_internals, K, K, 2)
+        hm_score, hm_inds, hm_ys, hm_xs = _topk_channel(hm_hp, K=K)  # b x J x K
+        if hp_offset is not None:
+            hp_offset = _transpose_and_gather_feat(
+                hp_offset, hm_inds.view(batch, -1))
+            hp_offset = hp_offset.view(batch, num_internals, K, 2)
+            hm_xs = hm_xs + hp_offset[:, :, :, 0]
+            hm_ys = hm_ys + hp_offset[:, :, :, 1]
+        else:
+            hm_xs = hm_xs + 0.5
+            hm_ys = hm_ys + 0.5
+
+        vis_pred_kps = vis_preds.permute(0, 2, 1)
+        vis_pred_kps = vis_pred_kps.to(hm_xs.device)
+        hm_xs = hm_xs * vis_pred_kps
+        hm_ys = hm_ys * vis_pred_kps
+
+        mask = (hm_score > thresh).float()
+        hm_score = (1 - mask) * -1 + mask * hm_score
+        hm_ys = (1 - mask) * (-10000) + mask * hm_ys
+        hm_xs = (1 - mask) * (-10000) + mask * hm_xs
+        hm_kps = torch.stack([hm_xs, hm_ys], dim=-1).unsqueeze(
+            2).expand(batch, num_internals, K, K, 2)
+        dist = (((reg_kps - hm_kps) ** 2).sum(dim=4) ** 0.5)
+        min_dist, min_ind = dist.min(dim=3)  # b x J x K
+        hm_score = hm_score.gather(2, min_ind).unsqueeze(-1)  # b x J x K x 1
+        min_dist = min_dist.unsqueeze(-1)
+        min_ind = min_ind.view(batch, num_internals, K, 1, 1).expand(
+            batch, num_internals, K, 1, 2)
+        hm_kps = hm_kps.gather(3, min_ind)
+        hm_kps = hm_kps.view(batch, num_internals, K, 2)
+        l = bboxes[:, :, 0].view(batch, 1, K, 1).expand(batch, num_internals, K, 1)
+        t = bboxes[:, :, 1].view(batch, 1, K, 1).expand(batch, num_internals, K, 1)
+        r = bboxes[:, :, 2].view(batch, 1, K, 1).expand(batch, num_internals, K, 1)
+        b = bboxes[:, :, 3].view(batch, 1, K, 1).expand(batch, num_internals, K, 1)
+        mask = (hm_kps[..., 0:1] < l) + (hm_kps[..., 0:1] > r) + \
+               (hm_kps[..., 1:2] < t) + (hm_kps[..., 1:2] > b) + \
+               (hm_score < thresh) + (min_dist > (torch.max(b - t, r - l) * 0.3))
+        mask = (mask > 0).float().expand(batch, num_internals, K, 2)
+        kps = (1 - mask) * hm_kps + mask * kps
+        kps = kps.permute(0, 2, 1, 3).contiguous().view(
+            batch, K, num_internals * 2)
+
     # co-ordinates of centers of internals
-    int_ctrs_xs = kps[..., ::2].view(batch, -1)   # shape: batch x K*6
-    int_ctrs_ys = kps[..., 1::2].view(batch, -1)
-    reg_inds = (int_ctrs_ys * height + int_ctrs_xs).long()
+    int_ctrs_xs = torch.clamp(kps[..., ::2].view(batch, -1).int(), min=0, max=height-1)   # shape: batch x K*6
+    int_ctrs_ys = torch.clamp(kps[..., 1::2].view(batch, -1).int(), min=0, max=height-1)
+    reg_inds = (int_ctrs_ys.int() * height + int_ctrs_xs.int()).long()
     kps_kps = _transpose_and_gather_feat(kps_kps, reg_inds)
     kps_kps = kps_kps.view(batch, K, num_internals*num_kpts*2)
     kps_kps[..., ::2] += \
         int_ctrs_xs.view(batch, K*num_internals, 1).expand(batch, K*num_internals, num_kpts).reshape(batch, K, -1)
     kps_kps[..., 1::2] += \
         int_ctrs_ys.view(batch, K*num_internals, 1).expand(batch, K*num_internals, num_kpts).reshape(batch, K, -1)
+
+    if hm_hp is not None:
+        thresh = 0.1
+        kps_kps_hm = _nms(kps_kps_hm)
+        kps_kps = kps_kps.view(batch, K, num_kpts*num_internals, 2).permute(
+            0, 2, 1, 3).contiguous()
+        reg_kps_kps = kps_kps.unsqueeze(3).expand(batch, num_kpts*num_internals, K, K, 2)
+        hm_hm_score, hm_hm_inds, hm_hm_ys, hm_hm_xs = _topk_channel(kps_kps_hm, K=K*num_internals)
+        hm_hm_score = hm_hm_score.view(batch, num_kpts * num_internals, K)
+        hm_hm_xs = hm_hm_xs.view(batch, num_kpts * num_internals, K)
+        hm_hm_ys = hm_hm_ys.view(batch, num_kpts * num_internals, K)
+        if hp_hp_offset is not None:
+            hp_hp_offset = _transpose_and_gather_feat(hp_hp_offset, hm_hm_inds.view(batch, -1))
+            hp_hp_offset = hp_hp_offset.view(batch, num_kpts * num_internals, K, 2)
+            hm_hm_xs = hm_hm_xs + hp_hp_offset[:, :, :, 0]
+            hm_hm_ys = hm_hm_ys + hp_hp_offset[:, :, :, 1]
+        else:
+            hm_hm_xs = hm_hm_xs + 0.5
+            hm_hm_ys = hm_hm_ys + 0.5
+
+        vis_pred_kps_kps = torch.reshape(vis_pred_kps, (batch, K, num_vis_models, 1)).expand(batch, K, num_vis_models, 4)
+        vis_pred_kps_kps = torch.reshape(vis_pred_kps_kps, (batch, K, num_internals * num_kpts))
+        vis_pred_kps_kps = vis_pred_kps_kps.permute(0, 2, 1)
+        vis_pred_kps_kps = vis_pred_kps_kps.to(hm_xs.device)
+
+        hm_hm_xs = hm_hm_xs * vis_pred_kps_kps
+        hm_hm_ys = hm_hm_ys * vis_pred_kps_kps
+
+        mask = (hm_hm_score > thresh).float()
+        hm_hm_score = (1 - mask) * -1 + mask * hm_hm_score
+        hm_hm_ys = (1 - mask) * (-10000) + mask * hm_hm_ys
+        hm_hm_xs = (1 - mask) * (-10000) + mask * hm_hm_xs
+        hm_hm_kps = torch.stack([hm_hm_xs, hm_hm_ys], dim=-1).unsqueeze(
+            2).expand(batch, num_kpts*num_internals, K, K, 2)
+        dist = (((reg_kps_kps - hm_hm_kps) ** 2).sum(dim=4) ** 0.5)
+        min_dist, min_ind = dist.min(dim=3)  # b x J x K
+        hm_hm_score = hm_hm_score.gather(2, min_ind).unsqueeze(-1)  # b x J x K x 1
+        min_dist = min_dist.unsqueeze(-1)
+        min_ind = min_ind.view(batch, num_kpts*num_internals, K, 1, 1).expand(
+            batch, num_kpts*num_internals, K, 1, 2)
+        hm_hm_kps = hm_hm_kps.gather(3, min_ind)
+        hm_hm_kps = hm_hm_kps.view(batch, num_kpts*num_internals, K, 2)
+        l = bboxes[:, :, 0].view(batch, 1, K, 1).expand(batch, num_kpts*num_internals, K, 1)
+        t = bboxes[:, :, 1].view(batch, 1, K, 1).expand(batch, num_kpts*num_internals, K, 1)
+        r = bboxes[:, :, 2].view(batch, 1, K, 1).expand(batch, num_kpts*num_internals, K, 1)
+        b = bboxes[:, :, 3].view(batch, 1, K, 1).expand(batch, num_kpts*num_internals, K, 1)
+        mask = (hm_hm_kps[..., 0:1] < l) + (hm_hm_kps[..., 0:1] > r) + \
+               (hm_hm_kps[..., 1:2] < t) + (hm_hm_kps[..., 1:2] > b) + \
+               (hm_hm_score < thresh) + (min_dist > (torch.max(b - t, r - l) * 0.3))
+        mask = (mask > 0).float().expand(batch, num_kpts*num_internals, K, 2)
+        kps_kps = (1 - mask) * hm_hm_kps + mask * kps_kps
+        kps_kps = kps_kps.permute(0, 2, 1, 3).contiguous().view(
+            batch, K, num_kpts * num_internals * 2)
+    detections = torch.cat([bboxes, scores, kps_kps, clses], dim=2)
+
+    return detections
+
+def vehint_bbpred_decode(
+        heat, wh, kps, hp_bound_wh, reg=None, hp_bound_reg=None, hm_hp=None, hp_offset=None, K=100):
+    batch, cat, height, width = heat.size()
+    num_internals = kps.shape[1] // 2
+    # heat = torch.sigmoid(heat)
+    # perform nms on heatmaps
+    heat = _nms(heat)
+    scores, inds, clses, ys, xs = _topk(heat, K=K)
+
+    kps = _transpose_and_gather_feat(kps, inds)
+    kps = kps.view(batch, K, num_internals * 2)
+    kps[..., ::2] += xs.view(batch, K, 1).expand(batch, K, num_internals)
+    kps[..., 1::2] += ys.view(batch, K, 1).expand(batch, K, num_internals)
+
+    # co-ordinates of centers of internals
+    int_ctrs_xs = kps[..., ::2].view(batch, -1)  # shape: batch x K*6
+    int_ctrs_ys = kps[..., 1::2].view(batch, -1)
+    reg_inds = (int_ctrs_ys * height + int_ctrs_xs).long()
 
     if reg is not None:
         reg = _transpose_and_gather_feat(reg, inds)
@@ -630,23 +1173,6 @@ def vehint_kptreg_decode(
             hm_xs = hm_xs + 0.5
             hm_ys = hm_ys + 0.5
 
-        kps_kps_hm = _nms(kps_kps_hm)
-        kps_kps = kps_kps.view(batch, K, num_kpts*num_internals, 2).permute(
-            0, 2, 1, 3).contiguous()
-        reg_kps_kps = kps_kps.unsqueeze(3).expand(batch, num_kpts*num_internals, K, K, 2)
-        hm_hm_score, hm_hm_inds, hm_hm_ys, hm_hm_xs = _topk_channel(kps_kps_hm, K=K*num_internals)
-        hm_hm_score = hm_hm_score.view(batch, num_kpts * num_internals, K)
-        hm_hm_xs = hm_hm_xs.view(batch, num_kpts * num_internals, K)
-        hm_hm_ys = hm_hm_ys.view(batch, num_kpts * num_internals, K)
-        if hp_hp_offset is not None:
-            hp_hp_offset = _transpose_and_gather_feat(hp_hp_offset, hm_hm_inds.view(batch, -1))
-            hp_hp_offset = hp_hp_offset.view(batch, num_kpts * num_internals, K, 2)
-            hm_hm_xs = hm_hm_xs + hp_hp_offset[:, :, :, 0]
-            hm_hm_ys = hm_hm_ys + hp_hp_offset[:, :, :, 1]
-        else:
-            hm_hm_xs = hm_hm_xs + 0.5
-            hm_hm_ys = hm_hm_ys + 0.5
-
         mask = (hm_score > thresh).float()
         hm_score = (1 - mask) * -1 + mask * hm_score
         hm_ys = (1 - mask) * (-10000) + mask * hm_ys
@@ -673,31 +1199,26 @@ def vehint_kptreg_decode(
         kps = kps.permute(0, 2, 1, 3).contiguous().view(
             batch, K, num_internals * 2)
 
-        mask = (hm_hm_score > thresh).float()
-        hm_hm_score = (1 - mask) * -1 + mask * hm_hm_score
-        hm_hm_ys = (1 - mask) * (-10000) + mask * hm_hm_ys
-        hm_hm_xs = (1 - mask) * (-10000) + mask * hm_hm_xs
-        hm_hm_kps = torch.stack([hm_hm_xs, hm_hm_ys], dim=-1).unsqueeze(
-            2).expand(batch, num_kpts*num_internals, K, K, 2)
-        dist = (((reg_kps_kps - hm_hm_kps) ** 2).sum(dim=4) ** 0.5)
-        min_dist, min_ind = dist.min(dim=3)  # b x J x K
-        hm_hm_score = hm_hm_score.gather(2, min_ind).unsqueeze(-1)  # b x J x K x 1
-        min_dist = min_dist.unsqueeze(-1)
-        min_ind = min_ind.view(batch, num_kpts*num_internals, K, 1, 1).expand(
-            batch, num_kpts*num_internals, K, 1, 2)
-        hm_hm_kps = hm_hm_kps.gather(3, min_ind)
-        hm_hm_kps = hm_hm_kps.view(batch, num_kpts*num_internals, K, 2)
-        l = bboxes[:, :, 0].view(batch, 1, K, 1).expand(batch, num_kpts*num_internals, K, 1)
-        t = bboxes[:, :, 1].view(batch, 1, K, 1).expand(batch, num_kpts*num_internals, K, 1)
-        r = bboxes[:, :, 2].view(batch, 1, K, 1).expand(batch, num_kpts*num_internals, K, 1)
-        b = bboxes[:, :, 3].view(batch, 1, K, 1).expand(batch, num_kpts*num_internals, K, 1)
-        mask = (hm_hm_kps[..., 0:1] < l) + (hm_hm_kps[..., 0:1] > r) + \
-               (hm_hm_kps[..., 1:2] < t) + (hm_hm_kps[..., 1:2] > b) + \
-               (hm_hm_score < thresh) + (min_dist > (torch.max(b - t, r - l) * 0.3))
-        mask = (mask > 0).float().expand(batch, num_kpts*num_internals, K, 2)
-        kps_kps = (1 - mask) * hm_hm_kps + mask * kps_kps
-        kps_kps = kps_kps.permute(0, 2, 1, 3).contiguous().view(
-            batch, K, num_kpts * num_internals * 2)
-    detections = torch.cat([bboxes, scores, kps_kps, clses], dim=2)
+
+        if reg is not None:
+            hp_bound_reg = _transpose_and_gather_feat(hp_bound_reg, reg_inds)
+            hp_bound_reg = hp_bound_reg.view(batch, K, -1)
+            int_ctrs_xs = int_ctrs_xs.view(batch, K, -1) + reg[:, :, 0:num_internals:2]
+            int_ctrs_ys = int_ctrs_ys.view(batch, K, -1) + reg[:, :, 1:num_internals:2]
+        else:
+            int_ctrs_xs = int_ctrs_xs.view(batch, K, -1) + 0.5
+            int_ctrs_ys = int_ctrs_ys.view(batch, K, -1) + 0.5
+        hp_bound_wh = _transpose_and_gather_feat(hp_bound_wh, reg_inds)
+        hp_bound_wh = hp_bound_wh.view(batch, K, -1)
+
+        # int_ctrs_xs shape: batch x K x 6
+        # hp_bboxes shape : batch x K x 6*4
+        hp_bboxes = torch.cat([int_ctrs_xs - hp_bound_wh[..., 0:num_internals:2] / 2,
+                            int_ctrs_ys - hp_bound_wh[..., 1:num_internals:2] / 2,
+                            int_ctrs_xs + hp_bound_wh[..., 0:num_internals:2] / 2,
+                            int_ctrs_ys + hp_bound_wh[..., 1:num_internals:2] / 2], dim=2)
+    detections = torch.cat([bboxes, scores, kps, hp_bboxes, clses], dim=2)
+    # TODO: find out what metrics to use for evaluation and comparison with other models and depending on that
+    # TODO: find score for the vehicle internals bounding boxes
 
     return detections
