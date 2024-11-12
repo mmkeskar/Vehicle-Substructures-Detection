@@ -8,7 +8,11 @@ from progress.bar import Bar
 from models.data_parallel import DataParallel
 from utils.utils import AverageMeter
 
+from models.utils import _sigmoid
+
 from torch.utils.tensorboard import SummaryWriter
+
+import matplotlib.pyplot as plt
 
 
 class ModelWithLoss(torch.nn.Module):
@@ -68,8 +72,9 @@ class BaseTrainer(object):
 
       for k in batch:
         if k != 'meta':
-          batch[k] = batch[k].to(device=opt.device, non_blocking=True)    
+          batch[k] = batch[k].to(device=opt.device, non_blocking=True)
       output, loss, loss_stats = model_with_loss(batch)
+
       loss = loss.mean()
       if phase != 'train':
         self.writer.add_scalar("Loss/validation", loss, epoch)
@@ -97,18 +102,20 @@ class BaseTrainer(object):
           print('{}/{}| {}'.format(opt.task, opt.exp_id, Bar.suffix)) 
       else:
         bar.next()
-      
+
       if opt.debug > 0:
         self.debug(batch, output, iter_id)
       
       if opt.test:
         self.save_result(output, batch, results)
+
       del output, loss, loss_stats
     
     bar.finish()
     ret = {k: v.avg for k, v in avg_loss_stats.items()}
     ret['time'] = bar.elapsed_td.total_seconds() / 60.
     print(f"epoch: {epoch}")
+
     return ret, results
   
   def debug(self, batch, output, iter_id):

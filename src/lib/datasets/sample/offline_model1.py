@@ -30,7 +30,18 @@ from utils.image import draw_dense_reg
 import math
 
 
-class VehIntDataset(data.Dataset):
+class VehInt6KptRegDataset(data.Dataset):
+    """
+    This class uses the annotation file data-apollocar3d/annotations/apollo_train_24_modkeypoints.json
+    This annotation file was created after splitting the entire data obtained from apollo into training,
+    validation, and test sets. We keep only the 24 keypoints that we are interested in.
+
+    In this class, we find the centers of the internals and depending on the visibility assign visibility
+    to the internals. We use the same radius for the object center heatmaps, and the vehicle internals centers
+    heatmaps.
+    """
+
+
     def _get_border(self, border, size):
         i = 1
         while size - border // i <= border // i:
@@ -40,6 +51,7 @@ class VehIntDataset(data.Dataset):
     def __getitem__(self, index):
         image_id = self.images[index]
         file_path_ext = self.coco.loadImgs(image_id)[0]['file_name']
+        # print(f"image_id: {image_id}, file name: {file_path_ext}")
         image_path = os.path.join(self.image_path_const, file_path_ext)
         image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
         input_res = self.opt.input_res
@@ -52,7 +64,7 @@ class VehIntDataset(data.Dataset):
             rand_row = 0
             rand_col = 0
             image = image[rand_row:rand_row + input_res, rand_col:rand_col + input_res, :]
-            image_to_show = image.copy()
+            # image_to_show = image.copy()
             image = (image.astype(np.float32) / 255.)
             image = image.transpose(2, 0, 1)
         else:
@@ -61,14 +73,14 @@ class VehIntDataset(data.Dataset):
                 probs = rows / np.sum(rows)
                 rand_row = np.random.choice(rows, 1, p=probs)[0]
             elif self.opt.add_quad_bias:
-                rows = np.arange(0, permissible_row) ** 2
-                probs = rows / np.sum(rows)
+                rows = np.arange(0, permissible_row)
+                probs = (rows ** 2) / np.sum((rows ** 2))
                 rand_row = np.random.choice(rows, 1, p=probs)[0]
             else:
                 rand_row = np.random.randint(0, permissible_row)
             rand_col = np.random.randint(0, permissible_col)
             image = image[rand_row:rand_row + input_res, rand_col:rand_col + input_res, :]
-            image_to_show = image.copy()
+            # image_to_show = image.copy()
             image = (image.astype(np.float32) / 255.)
             image = image.transpose(2, 0, 1)
         output_res = self.opt.output_res
@@ -102,9 +114,8 @@ class VehIntDataset(data.Dataset):
 
         draw_gaussian = draw_msra_gaussian if self.opt.mse_loss else draw_umich_gaussian
 
-        starting_points = []
-        ending_points = []
-        centers = []
+        # internals = []
+        # internal_centers = []
 
         for i in range(num_objs):
             ann = annotations[i]
@@ -124,9 +135,6 @@ class VehIntDataset(data.Dataset):
                     bbox[1] = max(min(rand_row + input_res - 1, bbox[1]), rand_row) - rand_row
                     bbox[2] = max(min(rand_col + input_res - 1, bbox[2]), rand_col) - rand_col
                     bbox[3] = max(min(rand_row + input_res - 1, bbox[3]), rand_row) - rand_row
-
-                starting_points.append((bbox[0], bbox[1]))
-                ending_points.append((bbox[2], bbox[3]))
 
                 # divide coordinated by down ratio to fit into output res dimensioned targets
                 bbox = bbox / self.opt.down_ratio
@@ -167,7 +175,6 @@ class VehIntDataset(data.Dataset):
                         kps_visibility[i][j * 2 + 1] = 0 if kpt[2] == 2 else 1
                         kps_vis_mask[i][j] = 1
                         if kpt[2] > 0:
-                            centers.append((kpt[0], kpt[1]))
                             hp_offset[i * self.num_kpts + j] = kpt[:2] - kpt[:2].astype(np.int32)
                             kps[i][j * 2:j * 2 + 2] = kpt[0] - ct_int[0], kpt[1] - ct_int[1]
                             hp_mask[i * self.num_kpts + j] = 1
@@ -177,6 +184,7 @@ class VehIntDataset(data.Dataset):
                                 draw_dense_reg(dense_kps[j], hm[0], ct_int, kps[i][j * 2:j * 2 + 2], radius, True)
                                 draw_gaussian(dense_kps_mask[j], ct_int, radius)
                             draw_gaussian(hm_hp[j], (int(kpt[0]), int(kpt[1])), radius)
+
                 else:
                     kpts = np.zeros((self.num_kpts, 3))
 
@@ -209,4 +217,3 @@ class VehIntDataset(data.Dataset):
             ret['meta'] = meta
 
         return ret
-
