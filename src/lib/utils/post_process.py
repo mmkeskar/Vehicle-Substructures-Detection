@@ -113,7 +113,7 @@ def multi_pose_post_process(dets, c, s, h, w):
     ret.append({np.ones(1, dtype=np.int32)[0]: top_preds})
   return ret
 
-def vehint_post_process(dets, input_res):
+def vehint_post_process(dets, input_res, kpts16=False):
   ret = []
   for i in range(dets.shape[0]):
     bbox = dets[i, :, :4]
@@ -122,10 +122,87 @@ def vehint_post_process(dets, input_res):
     bbox = bbox.reshape(-1, 4)
     bbox = np.clip(bbox, 0, input_res)
     # print(f"bbox: {bbox}")
-    pts = dets[i, :, 5:53].reshape(-1, 2)
+    if kpts16:
+      pts = dets[i, :, 5:37].reshape(-1, 2)
+    else:
+      pts = dets[i, :, 5:53].reshape(-1, 2)
     pts[:, 0] = pts[:, 0] * 4
     pts[:, 1] = pts[:, 1] * 4
-    pts = pts.reshape(-1, 48)
+    if kpts16:
+      pts = pts.reshape(-1, 32)
+    else:
+      pts = pts.reshape(-1, 48)
+    pts = np.clip(pts, 0, input_res)
+    if dets.shape[2] > 77:
+      vis = dets[i, :, 53:77].reshape(-1, 24)
+      top_preds = np.concatenate(
+        [bbox, dets[i, :, 4:5], pts, vis], axis=1).astype(np.float32).tolist()
+    else:
+      top_preds = np.concatenate(
+        [bbox, dets[i, :, 4:5], pts], axis=1).astype(np.float32).tolist()
+    ret.append({np.ones(1, dtype=np.int32)[0]: top_preds})
+  return ret
+
+def offline_model1_post_process(dets, input_res):
+  ret = []
+  for i in range(dets.shape[0]):
+    bbox = dets[i, :, :4]
+    bbox[:, [0, 2]] = bbox[:, [0, 2]] * 4  # * (3384 / 512)
+    bbox[:, [1, 3]] = bbox[:, [1, 3]] * 4   # * (2710 / 512)
+    bbox = bbox.reshape(-1, 4)
+    bbox = np.clip(bbox, 0, input_res)
+    pts = dets[i, :, 5:17].reshape(-1, 2)
+    pts[:, 0] = pts[:, 0] * 4
+    pts[:, 1] = pts[:, 1] * 4
+    pts = pts.reshape(-1, 12)
+    pts = np.clip(pts, 0, input_res)
+    if dets.shape[2] > 77:
+      vis = dets[i, :, 53:77].reshape(-1, 24)
+      top_preds = np.concatenate(
+        [bbox, dets[i, :, 4:5], pts, vis], axis=1).astype(np.float32).tolist()
+    else:
+      top_preds = np.concatenate(
+        [bbox, dets[i, :, 4:5], pts], axis=1).astype(np.float32).tolist()
+    ret.append({np.ones(1, dtype=np.int32)[0]: top_preds})
+  return ret
+
+def cascaded_model_post_process(dets, input_res):
+  ret = []
+  for i in range(dets.shape[0]):
+    bbox = dets[i, :, :4]
+    bbox[:, [0, 2]] = bbox[:, [0, 2]] * 4  # * (3384 / 512)
+    bbox[:, [1, 3]] = bbox[:, [1, 3]] * 4   # * (2710 / 512)
+    bbox = bbox.reshape(-1, 4)
+    bbox = np.clip(bbox, 0, input_res)
+    pts = dets[i, :, 5:37]
+    centers = dets[i, :, 37:49]
+
+    lf = np.concatenate((pts[:, :2], pts[:, 4:6], pts[:, 2:4], pts[:, 6:8]), axis=1)
+    lr = np.concatenate((pts[:, 8:10], pts[:, 12:14], pts[:, 10:12], pts[:, 14:16]), axis=1)
+    rr = np.concatenate((pts[:, 20:22], pts[:, 16:18], pts[:, 22:24], pts[:, 18:20]), axis=1)
+    rf = np.concatenate((pts[:, 28:30], pts[:, 24:26], pts[:, 30:32], pts[:, 26:28]), axis=1)
+    pts = np.concatenate((lf, lr, rr, rf), axis=1)
+
+    pts = np.clip(pts, 0, input_res)
+    centers = np.clip(centers, 0, input_res)
+    top_preds = np.concatenate(
+      [bbox, dets[i, :, 4:5], pts, centers], axis=1).astype(np.float32).tolist()
+    ret.append({np.ones(1, dtype=np.int32)[0]: top_preds})
+  return ret
+
+def vehint_tl_post_process(dets, input_res):
+  ret = []
+  for i in range(dets.shape[0]):
+    bbox = dets[i, :, :4]
+    bbox[:, [0, 2]] = bbox[:, [0, 2]] * 4  # * (3384 / 512)
+    bbox[:, [1, 3]] = bbox[:, [1, 3]] * 4   # * (2710 / 512)
+    bbox = bbox.reshape(-1, 4)
+    bbox = np.clip(bbox, 0, input_res)
+    # print(f"bbox: {bbox}")
+    pts = dets[i, :, 5:21].reshape(-1, 2)
+    pts[:, 0] = pts[:, 0] * 4
+    pts[:, 1] = pts[:, 1] * 4
+    pts = pts.reshape(-1, 16)
     pts = np.clip(pts, 0, input_res)
     if dets.shape[2] > 77:
       vis = dets[i, :, 53:77].reshape(-1, 24)
@@ -152,7 +229,7 @@ def vehint_kptreg_post_process(dets, input_res):
     pts = pts.reshape(-1, 12)
     pts = np.clip(pts, 0, input_res)
 
-    kpts = dets[i, :, 17:65].reshape(-1, 2)
+    kpts = dets[i, :, 5:53].reshape(-1, 2)
     kpts[:, 0] = kpts[:, 0] * 4
     kpts[:, 1] = kpts[:, 1] * 4
     kpts = kpts.reshape(-1, 48)
@@ -171,3 +248,32 @@ def vehint_kptreg_post_process(dets, input_res):
     ret.append({np.ones(1, dtype=np.int32)[0]: top_preds})
   return ret
 
+def vehint_bbpred_post_process(dets, input_res):
+  ret = []
+  for i in range(dets.shape[0]):
+    bbox = dets[i, :, :4]
+    bbox[:, [0, 2]] = bbox[:, [0, 2]] * 4  # * (3384 / 512)
+    bbox[:, [1, 3]] = bbox[:, [1, 3]] * 4  # * (2710 / 512)
+    bbox = bbox.reshape(-1, 4)
+    bbox = np.clip(bbox, 0, input_res)
+    # print(f"bbox: {bbox}")
+    pts = dets[i, :, 5:17].reshape(-1, 2)
+    pts[:, 0] = pts[:, 0] * 4
+    pts[:, 1] = pts[:, 1] * 4
+    pts = pts.reshape(-1, 48)
+    pts = np.clip(pts, 0, input_res)
+
+    hp_bboxes = dets[i, :, 17:41]
+    hp_bboxes[:, 0:24:2] = hp_bboxes[:, 0:24:2] * 4
+    hp_bboxes[:, 1:24:2] = hp_bboxes[:, 1:24:2] * 4
+    hp_bboxes = hp_bboxes.reshape(-1, 24)
+    hp_bboxes = np.clip(hp_bboxes, 0, input_res)
+    if dets.shape[2] > 77:
+      vis = dets[i, :, 53:77].reshape(-1, 24)
+      top_preds = np.concatenate(
+        [bbox, dets[i, :, 4:5], pts, vis], axis=1).astype(np.float32).tolist()
+    else:
+      top_preds = np.concatenate(
+        [bbox, dets[i, :, 4:5], pts, hp_bboxes], axis=1).astype(np.float32).tolist()
+    ret.append({np.ones(1, dtype=np.int32)[0]: top_preds})
+  return ret

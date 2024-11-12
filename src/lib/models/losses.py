@@ -174,6 +174,24 @@ class RegWeightedL1Loss(nn.Module):
     loss = loss / (mask.sum() + 1e-4)
     return loss
 
+class KeypointVisLoss(nn.Module):
+    def __init__(self):
+        super(KeypointVisLoss, self).__init__()
+
+    def forward(self, output, ind, mask, target):
+        pred = _transpose_and_gather_feat(output, ind)
+
+        mask = mask.reshape(mask.shape[0], -1)
+        # Cross entropy input of shape (N, d_1, d_2,..., d_k, C)
+        # The number of classes are two but there are (number of objects) x (number of keypoints) categories
+        pred = pred.reshape(pred.shape[0], -1, 2)
+
+        target = target.reshape(target.shape[0], -1, 2)
+
+        pred = F.log_softmax(pred, dim=2)
+        loss = (-(pred * target).sum(2) * mask).sum(1)
+        return loss
+
 class L1Loss(nn.Module):
   def __init__(self):
     super(L1Loss, self).__init__()

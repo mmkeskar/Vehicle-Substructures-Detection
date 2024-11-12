@@ -24,6 +24,8 @@ def main(opt):
   torch.manual_seed(opt.seed)
   torch.backends.cudnn.benchmark = not opt.not_cuda_benchmark and not opt.test
   Dataset = get_dataset(opt.dataset, opt.task)
+  obj = Dataset(opt, 'test')
+  print(f"annotation file: {obj.annot_path}")
   opt = opts().update_dataset_info_and_set_heads(opt, Dataset)
   print(f"opt.head_conv: {opt.head_conv}")
   print(opt)
@@ -49,18 +51,26 @@ def main(opt):
   # writer = SummaryWriter()
 
   print('Setting up data...')
+
+  if opt.test:
+    test_loader = torch.utils.data.DataLoader(
+        Dataset(opt, 'test'),
+        batch_size=1,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True
+    )
+    _, preds = trainer.val(0, test_loader)
+    test_loader.dataset.run_eval(preds, opt.save_dir)
+    return
+
   val_loader = torch.utils.data.DataLoader(
-      Dataset(opt, 'val'), 
-      batch_size=1, 
+      Dataset(opt, 'val'),
+      batch_size=1,
       shuffle=False,
       num_workers=1,
       pin_memory=True
   )
-
-  if opt.test:
-    _, preds = trainer.val(0, val_loader)
-    val_loader.dataset.run_eval(preds, opt.save_dir)
-    return
 
   train_loader = torch.utils.data.DataLoader(
       Dataset(opt, 'train'), 
@@ -80,7 +90,6 @@ def main(opt):
     for k, v in log_dict_train.items():
       logger.scalar_summary('train_{}'.format(k), v, epoch)
       logger.write('{} {:8f} | '.format(k, v))
-    """
     if opt.val_intervals > 0 and epoch % opt.val_intervals == 0:
       save_model(os.path.join(opt.save_dir, 'model_{}.pth'.format(mark)), 
                  epoch, model, optimizer)
@@ -96,9 +105,7 @@ def main(opt):
     else:
       save_model(os.path.join(opt.save_dir, 'model_last.pth'), 
                  epoch, model, optimizer)
-    """     # TODO: uncomment this later
-    save_model(os.path.join(opt.save_dir, 'model_last.pth'),   # TODO: remove this later
-               epoch, model, optimizer)
+
     logger.write('\n')
     if epoch in opt.lr_step:
       save_model(os.path.join(opt.save_dir, 'model_{}.pth'.format(epoch)), 

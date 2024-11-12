@@ -31,6 +31,17 @@ import math
 
 
 class VehIntKptRegDataset(data.Dataset):
+    """
+    This class uses the annotation file data-apollocar3d/annotations/apollo_train_24_modkeypoints.json
+    This annotation file was created after splitting the entire data obtained from apollo into training,
+    validation, and test sets. We keep only the 24 keypoints that we are interested in.
+
+    In this class, we find the centers of the internals and depending on the visibility assign visibility
+    to the internals. We use the same radius for the object center heatmaps, and the vehicle internals centers
+    heatmaps.
+    """
+
+
     def _get_border(self, border, size):
         i = 1
         while size - border // i <= border // i:
@@ -53,7 +64,7 @@ class VehIntKptRegDataset(data.Dataset):
             rand_row = 0
             rand_col = 0
             image = image[rand_row:rand_row + input_res, rand_col:rand_col + input_res, :]
-            image_to_show = image.copy()
+            # image_to_show = image.copy()
             image = (image.astype(np.float32) / 255.)
             image = image.transpose(2, 0, 1)
         else:
@@ -61,11 +72,15 @@ class VehIntKptRegDataset(data.Dataset):
                 rows = np.arange(0, permissible_row)
                 probs = rows / np.sum(rows)
                 rand_row = np.random.choice(rows, 1, p=probs)[0]
+            elif self.opt.add_quad_bias:
+                rows = np.arange(0, permissible_row)
+                probs = (rows ** 2) / np.sum((rows ** 2))
+                rand_row = np.random.choice(rows, 1, p=probs)[0]
             else:
                 rand_row = np.random.randint(0, permissible_row)
             rand_col = np.random.randint(0, permissible_col)
             image = image[rand_row:rand_row + input_res, rand_col:rand_col + input_res, :]
-            image_to_show = image.copy()
+            # image_to_show = image.copy()
             image = (image.astype(np.float32) / 255.)
             image = image.transpose(2, 0, 1)
         output_res = self.opt.output_res
@@ -113,8 +128,8 @@ class VehIntKptRegDataset(data.Dataset):
 
         draw_gaussian = draw_msra_gaussian if self.opt.mse_loss else draw_umich_gaussian
 
-        internals = []
-        internal_centers = []
+        # internals = []
+        # internal_centers = []
 
         for i in range(num_objs):
             ann = annotations[i]
@@ -155,6 +170,7 @@ class VehIntKptRegDataset(data.Dataset):
 
                 if len(ann['keypoints']) != 0:
                     all_kpts = np.array(ann['keypoints']).reshape(-1, 3)
+                    # check if each keypoint is inside the cropped image
                     for kpt in all_kpts:
                         if rand_col <= kpt[0] < rand_col + input_res and rand_row <= kpt[1] < rand_row + input_res:
                             kpt[0], kpt[1] = kpt[0] - rand_col, kpt[1] - rand_row
@@ -186,6 +202,7 @@ class VehIntKptRegDataset(data.Dataset):
                         kpt = kpts[j]
                         if kpt[2] > 0:
                             kpt_int = np.floor(kpt).astype(np.int)
+                            # internal_centers.append(kpt_int)
                             hp_offset[i * self.num_kpts + j] = kpt[:2] - kpt_int[:2]
                             kps[i][j * 2:j * 2 + 2] = kpt[0] - ct_int[0], kpt[1] - ct_int[1]
                             hp_mask[i * self.num_kpts + j] = 1
@@ -202,7 +219,7 @@ class VehIntKptRegDataset(data.Dataset):
                                 corner = corners[k]
                                 if corner[2] > 0:
                                     corner_int = np.floor(corner).astype(np.int)
-                                    internals.append(corner_int)
+                                    # internals.append(corner_int)
                                     tot_num_kpts = i * self.num_kpts * self.num_int_kpts + j * self.num_int_kpts + k
                                     tot_ints = i * self.num_kpts
                                     hp_hp_offset[tot_num_kpts] = corner[:2] - corner_int[:2]
@@ -218,17 +235,14 @@ class VehIntKptRegDataset(data.Dataset):
 
                             draw_gaussian(hm_hp[j], (int(kpt[0]), int(kpt[1])), radius)
 
-                    else:
-                        kpts = np.zeros((self.num_kpts, 3))
-                        all_kpts = np.zeros((self.num_kpts*self.num_int_kpts, 3))
+                else:
+                    kpts = np.zeros((self.num_kpts, 3))
+                    all_kpts = np.zeros((self.num_kpts*self.num_int_kpts, 3))
 
-                    draw_gaussian(hm[0], ct_int, radius)
-                    gt_det.append([center[0] - w / 2, center[1] - h / 2,
-                               center[0] + w / 2, center[1] + h / 2, 1] + kpts[:, :2].reshape(
-                    self.num_kpts * 2).tolist() + all_kpts[:, :2].reshape(self.num_kpts*self.num_int_kpts*2).tolist() + [0])
-
-        for internal in internals:
-            cv2.circle(image_to_show, (internal[0]*4, internal[1]*4), 3, (0, 255, 0), 2)
+                draw_gaussian(hm[0], ct_int, radius)
+                gt_det.append([center[0] - w / 2, center[1] - h / 2,
+                           center[0] + w / 2, center[1] + h / 2, 1] + kpts[:, :2].reshape(
+                self.num_kpts * 2).tolist() + all_kpts[:, :2].reshape(self.num_kpts*self.num_int_kpts*2).tolist() + [0])
 
         ret = {'input': image, 'hm': hm, 'reg_mask': reg_mask, 'ind': ind, 'wh': wh, 'reg_ind': reg_ind,
                'hps': kps, 'hps_mask': kps_mask, 'hps_hps': kps_kps, 'hps_hps_mask': kps_kps_mask}
