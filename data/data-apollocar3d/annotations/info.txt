@@ -1,0 +1,35 @@
+24kptreg_train.json: file created for training the second model where we regress to the center if the vehicle internal before regressing to the corners of the keypoints.
+It contains all the 24 keypoints that we are looking for and also the centers of the vehicle internals. So, every fifth set of three points is for the center of the vehicle internals.
+This gives us 30 total sets of keypoints in the list.
+
+24kptreg_val.json: the validation version of the above file
+
+apollo_keypoints_24_train.json: the annotation file with just 24 keypoints for the earlier training data before we split all the combined data into train, val and test. These 24
+keypoints were given by openpifpaf, not sure if they are the ones we need.
+
+apollo_keypoints_24_val.json: the val version of the above file
+
+apollo_keypoints_66_train.json: the initial annotation file for the training data with all the 66 keypoints that we got from the openpifpaf library
+
+apollo_keypoints_66_val.json: the validation version of the above file
+
+apollo_train_24_modkeypoints.json: This annotations file was created after we split all of the combined data into train, test, and validation data and also kept only those 24 keypoints that we were interested in.
+
+apollo_val_24_modkeypoints.json: the validation version of the above file
+
+apollo_test_24_modkeypoints.json: the test version of the above file
+
+apollo_test_modified.json: we took out random crops of size 512 x 512 from the test images and prepared annotations corresponding just to those crops for convenience in getting
+the metrics.
+
+apollo_testnosky_modified.json: the random crops that we took out earlier contained a lot of parts with building and no cars, so we took random crops from the lower third of
+the test images.
+
+apollo_test2048_modified.json: we wanted to test out the metrics on bigger sized crops, we we took random crops of size 2048 x 2048 from the test images and prepared annotations
+corresponding to these images. 
+
+6_offline_train.json: file created for training the first offline model that predicts the centers of the cars and the regressions to the centers of the substructures. This file is created from the apollo_train_24_modkeypoints.json file.
+
+6_offline_test.json: the test version of the above 6_offline_train.json file.
+
+6_offline_val.json: the validation version of the above 6_offline_train.json file.
